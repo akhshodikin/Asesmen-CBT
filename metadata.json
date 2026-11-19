@@ -1,0 +1,8 @@
+{
+  "name": "SMART ASESMEN — SDN Kandangan I Tosari",
+  "description": "SMART ASESMEN: Sistem penyusunan kisi-kisi, naskah soal siap cetak, portal ujian CBT, dan generator Google Form Kurikulum Merdeka untuk SDN Kandangan I Tosari.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
