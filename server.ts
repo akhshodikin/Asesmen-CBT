@@ -16,16 +16,14 @@ function getGeminiModelName(): string {
   if (
     !model ||
     model === 'gemini-2.5-flash' ||
-    model === 'gemini-2.0-flash' ||
-    model === 'gemini-3.8-flash' ||
-    model === 'gemini-3.5-flash'
+    model === 'gemini-2.5-flash-lite'
   ) {
-    return 'gemini-3.5-flash-lite';
+    return 'gemini-3.8-flash';
   }
   return model;
 }
 
-const FALLBACK_GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
+const FALLBACK_GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.0-flash'];
 const BACKUP_GEMINI_KEY = process.env.GEMINI_BACKUP_KEY || '';
 
 function maskKey(key?: string): string {
@@ -555,11 +553,11 @@ async function startServer() {
       // Default: Gemini
       const key = apiKey?.trim() || process.env.GEMINI_API_KEY || BACKUP_GEMINI_KEY;
       const defaultGemini = [
-        { id: 'gemini-2.5-flash', name: 'gemini-2.5-flash (Generasi Terbaru, Cepat & Cerdas)', isRecommended: true },
-        { id: 'gemini-2.5-flash-lite', name: 'gemini-2.5-flash-lite (Ringan & Cepat)', isRecommended: false },
+        { id: 'gemini-3.8-flash', name: 'gemini-3.8-flash (Rekomendasi Resmi Google Terbaru ⭐)', isRecommended: true },
+        { id: 'gemini-3.5-flash-lite', name: 'gemini-3.5-flash-lite (Super Cepat ~1.8s & Hemat)', isRecommended: false },
+        { id: 'gemini-3.1-flash-lite', name: 'gemini-3.1-flash-lite (Alternatif Cepat)', isRecommended: false },
         { id: 'gemini-2.0-flash', name: 'gemini-2.0-flash (Stabil & Responsif)', isRecommended: false },
-        { id: 'gemini-1.5-flash', name: 'gemini-1.5-flash (Standar Cepat)', isRecommended: false },
-        { id: 'gemini-2.5-pro', name: 'gemini-2.5-pro (Penalaran Kompleks)', isRecommended: false },
+        { id: 'gemini-1.5-flash', name: 'gemini-1.5-flash (Standar Klasik)', isRecommended: false },
       ];
 
       if (key) {
@@ -576,7 +574,8 @@ async function startServer() {
                     methods.includes('generateContent') &&
                     !name.includes('embedding') &&
                     !name.includes('aqa') &&
-                    !name.includes('imagen')
+                    !name.includes('imagen') &&
+                    !name.includes('gemini-2.5-flash')
                   );
                 })
                 .map((m: any) => {
@@ -585,12 +584,13 @@ async function startServer() {
                   return {
                     id,
                     name: `${id} (${displayName})`,
-                    isRecommended: id === 'gemini-2.5-flash' || id === 'gemini-2.0-flash',
+                    isRecommended: id === 'gemini-3.8-flash' || id === 'gemini-3.5-flash-lite',
                   };
                 });
               if (validModels.length > 0) {
                 const rec =
-                  validModels.find((m: any) => m.id === 'gemini-2.5-flash')?.id ||
+                  validModels.find((m: any) => m.id === 'gemini-3.8-flash')?.id ||
+                  validModels.find((m: any) => m.id === 'gemini-3.5-flash-lite')?.id ||
                   validModels.find((m: any) => m.id.includes('flash'))?.id ||
                   validModels[0].id;
                 res.json({
@@ -609,7 +609,7 @@ async function startServer() {
         }
       }
 
-      res.json({ success: true, provider: 'gemini', models: defaultGemini, recommendedModel: 'gemini-2.5-flash' });
+      res.json({ success: true, provider: 'gemini', models: defaultGemini, recommendedModel: 'gemini-3.8-flash' });
     } catch (err: unknown) {
       res.status(500).json({ success: false, message: (err as Error).message });
     }

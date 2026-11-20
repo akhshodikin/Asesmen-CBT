@@ -81,7 +81,7 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
   const [selectedMainProvider, setSelectedMainProvider] = useState<string>('gemini');
 
   const [geminiKeyInput, setGeminiKeyInput] = useState('');
-  const [geminiModelInput, setGeminiModelInput] = useState('gemini-3.5-flash-lite');
+  const [geminiModelInput, setGeminiModelInput] = useState('gemini-3.8-flash');
 
   const [deepseekKeyInput, setDeepseekKeyInput] = useState('');
   const [deepseekModelInput, setDeepseekModelInput] = useState('deepseek-chat');
@@ -224,7 +224,13 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
       setActiveProviderTab(stored.activeProvider as 'gemini' | 'openai' | 'anthropic' | 'deepseek');
     }
     if (stored.gemini?.apiKey) setGeminiKeyInput(stored.gemini.apiKey);
-    if (stored.gemini?.model) setGeminiModelInput(stored.gemini.model);
+    if (stored.gemini?.model) {
+      const gModel =
+        stored.gemini.model === 'gemini-2.5-flash' || stored.gemini.model === 'gemini-2.5-flash-lite'
+          ? 'gemini-3.8-flash'
+          : stored.gemini.model;
+      setGeminiModelInput(gModel);
+    }
     if (stored.deepseek?.apiKey) setDeepseekKeyInput(stored.deepseek.apiKey);
     if (stored.deepseek?.model) setDeepseekModelInput(stored.deepseek.model);
     if (stored.openai?.apiKey) setOpenaiKeyInput(stored.openai.apiKey);
@@ -1443,11 +1449,11 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
                         ))
                       ) : (
                         <>
-                          <option value="gemini-2.5-flash">gemini-2.5-flash (Generasi Terbaru, Cepat &amp; Cerdas ⭐)</option>
-                          <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Ringan &amp; Cepat)</option>
+                          <option value="gemini-3.8-flash">gemini-3.8-flash (Rekomendasi Resmi Google Terbaru ⭐)</option>
+                          <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Super Cepat ~1.8s &amp; Hemat)</option>
+                          <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Alternatif Cepat)</option>
                           <option value="gemini-2.0-flash">gemini-2.0-flash (Stabil &amp; Responsif)</option>
-                          <option value="gemini-1.5-flash">gemini-1.5-flash (Standar Cepat)</option>
-                          <option value="gemini-2.5-pro">gemini-2.5-pro (Penalaran Kompleks)</option>
+                          <option value="gemini-1.5-flash">gemini-1.5-flash (Standar Klasik)</option>
                         </>
                       )}
                     </select>

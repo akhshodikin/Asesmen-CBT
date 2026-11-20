@@ -28,7 +28,7 @@ export function getStoredAiConfig(): ClientAiConfig {
     activeProvider: 'gemini',
     gemini: {
       apiKey: (import.meta as any).env?.VITE_GEMINI_API_KEY || '',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
     },
     openai: {
       apiKey: (import.meta as any).env?.VITE_OPENAI_API_KEY || '',
@@ -49,11 +49,17 @@ export function getStoredAiConfig(): ClientAiConfig {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaultConfig;
     const parsed = JSON.parse(raw);
+    const rawGeminiModel = parsed.gemini?.model;
+    const cleanedGeminiModel =
+      rawGeminiModel === 'gemini-2.5-flash' || rawGeminiModel === 'gemini-2.5-flash-lite'
+        ? 'gemini-3.8-flash'
+        : (rawGeminiModel || defaultConfig.gemini.model);
+
     return {
       activeProvider: parsed.activeProvider || defaultConfig.activeProvider,
       gemini: {
         apiKey: parsed.gemini?.apiKey || defaultConfig.gemini.apiKey,
-        model: parsed.gemini?.model || defaultConfig.gemini.model,
+        model: cleanedGeminiModel,
       },
       openai: {
         apiKey: parsed.openai?.apiKey || defaultConfig.openai.apiKey,
@@ -138,7 +144,7 @@ export function extractJsonFromText(rawText: string): any[] {
   }
 }
 
-// Panggilan langsung ke Google Gemini API dari Browser
+// Panggilan langsung ke Google Gemini API dari Browser dengan Fallback Model Otomatis
 async function callGeminiDirect(
   apiKey: string,
   model: string,
@@ -151,56 +157,93 @@ async function callGeminiDirect(
     throw new Error('API Key Google Gemini belum diisi. Silakan masukkan API Key di menu Setting Multi-AI.');
   }
 
-  // Model yang didukung: gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.0-flash, gemini-1.5-flash
-  let targetModel = model.trim() || 'gemini-2.5-flash';
-  if (targetModel.includes('3.5') || targetModel.includes('3.8')) {
-    targetModel = 'gemini-2.5-flash';
+  // Bersihkan model usang (gemini-2.5-flash sudah deprecated oleh Google)
+  let initialModel = model.trim();
+  if (!initialModel || initialModel === 'gemini-2.5-flash' || initialModel === 'gemini-2.5-flash-lite') {
+    initialModel = 'gemini-3.8-flash';
   }
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${cleanKey}`;
+  // Daftar kandidat model untuk dicoba berurutan jika ada model yang deprecated/not found
+  const candidateModels = Array.from(
+    new Set([
+      initialModel,
+      'gemini-3.8-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash',
+    ])
+  );
 
-  const requestBody: any = {
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: prompt }],
-      },
-    ],
-    generationConfig: {
-      temperature: 0.7,
-      responseMimeType: 'application/json',
-    },
-  };
+  let lastError: any = null;
 
-  if (systemInstruction) {
-    requestBody.systemInstruction = {
-      parts: [{ text: systemInstruction }],
-    };
-  }
+  for (const m of candidateModels) {
+    try {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${cleanKey}`;
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-    signal,
-  });
+      const requestBody: any = {
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: prompt }],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          responseMimeType: 'application/json',
+        },
+      };
 
-  const data = await response.json();
-  if (!response.ok) {
-    const msg = data?.error?.message || `Gemini API Error (HTTP ${response.status})`;
-    if (msg.includes('API_KEY_INVALID') || msg.includes('API key not valid')) {
-      throw new Error('API Key Google Gemini tidak valid. Pastikan menyalin kunci resmi dari aistudio.google.com/apikey');
+      if (systemInstruction) {
+        requestBody.systemInstruction = {
+          parts: [{ text: systemInstruction }],
+        };
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal,
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        const msg = data?.error?.message || `Gemini API Error (HTTP ${response.status})`;
+        if (msg.includes('API_KEY_INVALID') || msg.includes('API key not valid')) {
+          throw new Error('API Key Google Gemini tidak valid. Pastikan menyalin kunci resmi dari aistudio.google.com/apikey');
+        }
+
+        // Jika model tidak tersedia / deprecated / not found, coba kandidat model berikutnya
+        if (
+          msg.includes('no longer available') ||
+          msg.includes('not found') ||
+          msg.includes('NOT_FOUND') ||
+          msg.includes('is not supported')
+        ) {
+          console.warn(`[Gemini] Model ${m} tidak tersedia (${msg}), mencoba model berikutnya...`);
+          lastError = new Error(msg);
+          continue;
+        }
+
+        throw new Error(msg);
+      }
+
+      const candidate = data.candidates?.[0];
+      const text = candidate?.content?.parts?.[0]?.text;
+      if (!text) {
+        throw new Error('Google Gemini tidak menghasilkan teks jawaban.');
+      }
+
+      return text;
+    } catch (err: any) {
+      if (err.name === 'AbortError') throw err;
+      if (err.message?.includes('tidak valid')) throw err;
+      lastError = err;
     }
-    throw new Error(msg);
   }
 
-  const candidate = data.candidates?.[0];
-  const text = candidate?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error('Google Gemini tidak menghasilkan teks jawaban.');
-  }
-
-  return text;
+  throw lastError || new Error('Google Gemini tidak dapat diakses dengan model yang tersedia.');
 }
 
 // Panggilan langsung ke OpenAI API dari Browser
@@ -414,7 +457,10 @@ Format kembalian wajib JSON array:
         'Koneksi server AI tidak tersedia di hosting Firebase. Untuk membuat soal AI langsung dari browser, silakan masukkan API Key Gemini Anda di menu "Setting Multi-AI" (pojok kanan atas), ATAU gunakan tombol "Gunakan Template Cerdas Lokal" di bawah ini yang siap pakai seketika!'
       );
     }
-    modelUsed = aiCfg.gemini.model || 'gemini-2.5-flash';
+    modelUsed = aiCfg.gemini.model || 'gemini-3.8-flash';
+    if (modelUsed === 'gemini-2.5-flash' || modelUsed === 'gemini-2.5-flash-lite') {
+      modelUsed = 'gemini-3.8-flash';
+    }
     providerName = 'Google Gemini';
     responseText = await callGeminiDirect(key, modelUsed, prompt, systemInstruction, signal);
   }
@@ -552,11 +598,11 @@ export async function detectModelsClient(
   // 2. GOOGLE GEMINI
   if (provider === 'gemini') {
     const defaultGeminiModels: DetectedModelItem[] = [
-      { id: 'gemini-2.5-flash', name: 'gemini-2.5-flash (Generasi Terbaru, Cepat & Cerdas)', isRecommended: true },
-      { id: 'gemini-2.5-flash-lite', name: 'gemini-2.5-flash-lite (Ringan & Cepat)', isRecommended: false },
+      { id: 'gemini-3.8-flash', name: 'gemini-3.8-flash (Rekomendasi Resmi Google Terbaru ⭐)', isRecommended: true },
+      { id: 'gemini-3.5-flash-lite', name: 'gemini-3.5-flash-lite (Super Cepat ~1.8s & Hemat)', isRecommended: false },
+      { id: 'gemini-3.1-flash-lite', name: 'gemini-3.1-flash-lite (Alternatif Cepat)', isRecommended: false },
       { id: 'gemini-2.0-flash', name: 'gemini-2.0-flash (Stabil & Responsif)', isRecommended: false },
       { id: 'gemini-1.5-flash', name: 'gemini-1.5-flash (Standar Cepat)', isRecommended: false },
-      { id: 'gemini-2.5-pro', name: 'gemini-2.5-pro (Penalaran Kompleks)', isRecommended: false },
     ];
 
     if (!cleanKey) {
@@ -564,7 +610,7 @@ export async function detectModelsClient(
         success: true,
         provider: 'gemini',
         models: defaultGeminiModels,
-        recommendedModel: 'gemini-2.5-flash',
+        recommendedModel: 'gemini-3.8-flash',
         message: 'Daftar model resmi Gemini default.',
       };
     }
@@ -582,13 +628,14 @@ export async function detectModelsClient(
                 methods.includes('generateContent') &&
                 !name.includes('embedding') &&
                 !name.includes('aqa') &&
-                !name.includes('imagen')
+                !name.includes('imagen') &&
+                !name.includes('gemini-2.5-flash') // Hindari model yang sudah deprecated oleh Google
               );
             })
             .map((m: any) => {
               const id = m.name.replace(/^models\//, '');
               const displayName = m.displayName || id;
-              const isRec = id === 'gemini-2.5-flash' || id === 'gemini-2.0-flash' || id === 'gemini-1.5-flash';
+              const isRec = id === 'gemini-3.8-flash' || id === 'gemini-3.5-flash-lite' || id === 'gemini-2.0-flash';
               return {
                 id,
                 name: `${id} (${displayName})`,
@@ -600,15 +647,18 @@ export async function detectModelsClient(
           if (validModels.length > 0) {
             // Prioritaskan model flash di urutan atas
             validModels.sort((a: DetectedModelItem, b: DetectedModelItem) => {
-              if (a.id === 'gemini-2.5-flash') return -1;
-              if (b.id === 'gemini-2.5-flash') return 1;
+              if (a.id === 'gemini-3.8-flash') return -1;
+              if (b.id === 'gemini-3.8-flash') return 1;
+              if (a.id === 'gemini-3.5-flash-lite') return -1;
+              if (b.id === 'gemini-3.5-flash-lite') return 1;
               if (a.id.includes('flash') && !b.id.includes('flash')) return -1;
               if (!a.id.includes('flash') && b.id.includes('flash')) return 1;
               return b.id.localeCompare(a.id);
             });
 
             const rec =
-              validModels.find((m: DetectedModelItem) => m.id === 'gemini-2.5-flash')?.id ||
+              validModels.find((m: DetectedModelItem) => m.id === 'gemini-3.8-flash')?.id ||
+              validModels.find((m: DetectedModelItem) => m.id === 'gemini-3.5-flash-lite')?.id ||
               validModels.find((m: DetectedModelItem) => m.id.includes('flash'))?.id ||
               validModels[0].id;
 
@@ -630,7 +680,7 @@ export async function detectModelsClient(
       success: true,
       provider: 'gemini',
       models: defaultGeminiModels,
-      recommendedModel: 'gemini-2.5-flash',
+      recommendedModel: 'gemini-3.8-flash',
       message: 'Model resmi Gemini siap digunakan.',
     };
   }
@@ -754,7 +804,7 @@ export async function testAiProviderClient(
         recommendedModel: modelDetection.recommendedModel,
       };
     } else if (provider === 'gemini') {
-      const m = chosenModel || 'gemini-2.5-flash';
+      const m = chosenModel || 'gemini-3.8-flash';
       const text = await callGeminiDirect(
         apiKey,
         m,
