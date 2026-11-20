@@ -232,14 +232,35 @@ export default function App() {
         const paramKelas = params.get('kelas') || undefined;
         const paramToken = params.get('token') || undefined;
         const paramNipd = params.get('nipd') || undefined;
+        const paramNisn = params.get('nisn') || undefined;
+
+        let matchedStudentName = 'Peserta Didik';
+        let matchedKelas = paramKelas || 'Kelas 5';
+        let matchedNipd = paramNipd;
+        let matchedNisn = paramNisn;
+
+        if (paramNisn || paramNipd) {
+          const found = students.find(
+            (s) =>
+              (paramNisn && s.nisn.trim() === paramNisn.trim()) ||
+              (paramNipd && s.nipd.trim() === paramNipd.trim())
+          );
+          if (found) {
+            matchedStudentName = found.nama;
+            matchedKelas = found.kelas;
+            matchedNipd = found.nipd;
+            matchedNisn = found.nisn;
+          }
+        }
 
         setAuthSession({
           role: 'siswa',
-          name: 'Peserta Didik',
-          identifier: paramNipd || 'SISWA-CBT',
+          name: matchedStudentName,
+          identifier: matchedNisn || matchedNipd || 'SISWA-CBT',
           loggedInAt: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-          kelas: paramKelas || 'Kelas 5',
-          nipd: paramNipd,
+          kelas: matchedKelas,
+          nipd: matchedNipd,
+          nisn: matchedNisn,
         });
 
         setActiveTab('cbt');
@@ -247,8 +268,8 @@ export default function App() {
         if (paramToken) {
           setConfig((prev) => ({ ...prev, tokenCBT: paramToken.toUpperCase() }));
         }
-        if (paramKelas) {
-          setConfig((prev) => ({ ...prev, kelas: paramKelas }));
+        if (matchedKelas) {
+          setConfig((prev) => ({ ...prev, kelas: matchedKelas }));
         }
       }
     } catch {

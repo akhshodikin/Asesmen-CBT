@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   Award,
   CheckCircle2,
   CheckSquare,
@@ -10,12 +11,17 @@ import {
   FileSpreadsheet,
   Flag,
   Key,
+  Lock,
+  Maximize,
+  Minimize,
   Monitor,
   Play,
   RotateCcw,
   Share2,
+  ShieldAlert,
   ShieldCheck,
   Shuffle,
+  UserCheck,
 } from 'lucide-react';
 import type {
   ActiveTab,
@@ -78,6 +84,15 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
   const [cbtStudentNipd, setCbtStudentNipd] = useState(
     isSiswaRole && authSession.nipd ? authSession.nipd : '908'
   );
+  const [cbtNisnInput, setCbtNisnInput] = useState(() => {
+    if (isSiswaRole && authSession.nisn) return authSession.nisn;
+    if (isSiswaRole && authSession.nipd) {
+      const match = students.find((s) => s.nipd === authSession.nipd);
+      return match ? match.nisn : '';
+    }
+    return '';
+  });
+  const [showManualLookup, setShowManualLookup] = useState(false);
   const [cbtTokenInput, setCbtTokenInput] = useState(() =>
     isSiswaRole ? '' : config.tokenCBT
   );
@@ -90,6 +105,16 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
   const [cbtConfirmSubmit, setCbtConfirmSubmit] = useState(false);
   const [cbtLastResult, setCbtLastResult] = useState<CBTSubmission | null>(null);
   const [sessionQuestions, setSessionQuestions] = useState<QuestionItem[]>(questions);
+
+  // Anti-Contek & Proctoring State
+  const MAX_CHEATING_VIOLATIONS = 3;
+  const [violationCount, setViolationCount] = useState(0);
+  const [violationLogs, setViolationLogs] = useState<string[]>([]);
+  const [violationModalOpen, setViolationModalOpen] = useState(false);
+  const [violationReason, setViolationReason] = useState('');
+  const [isExamLocked, setIsExamLocked] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const lastViolationTimeRef = useRef<number>(0);
 
   const activePackage = useMemo(
     () => examPackages.find((p) => p.id === activePackageId) || null,
@@ -105,19 +130,38 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
     if (isSiswaRole) {
       if (authSession.kelas) setCbtKelas(authSession.kelas);
       if (authSession.nipd) setCbtStudentNipd(authSession.nipd);
+      if (authSession.nisn) setCbtNisnInput(authSession.nisn);
       const params = new URLSearchParams(window.location.search);
       const urlToken = params.get('token');
+      const urlNisn = params.get('nisn');
       if (urlToken) {
         setCbtTokenInput(urlToken.trim().toUpperCase());
       } else {
         setCbtTokenInput('');
+      }
+      if (urlNisn) {
+        setCbtNisnInput(urlNisn.trim());
       }
       if (cbtStage === 'rekap') setCbtStage('login');
     } else {
       setCbtKelas(config.kelas);
       setCbtTokenInput(config.tokenCBT);
     }
-  }, [isSiswaRole, authSession.kelas, authSession.nipd, config.kelas, config.tokenCBT]);
+  }, [isSiswaRole, authSession.kelas, authSession.nipd, authSession.nisn, config.kelas, config.tokenCBT]);
+
+  // Cari data siswa berdasarkan NISN atau NIPD yang diketik
+  const matchedStudentByNisn = useMemo(() => {
+    const clean = cbtNisnInput.trim();
+    if (!clean) return null;
+    return students.find((s) => s.nisn === clean || s.nipd === clean) || null;
+  }, [students, cbtNisnInput]);
+
+  useEffect(() => {
+    if (matchedStudentByNisn) {
+      setCbtStudentNipd(matchedStudentByNisn.nipd);
+      setCbtKelas(matchedStudentByNisn.kelas);
+    }
+  }, [matchedStudentByNisn]);
 
   useEffect(() => {
     if (isSiswaRole && authSession.nipd) {
@@ -125,14 +169,15 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
       return;
     }
     const firstStd = students.find((s) => s.kelas === cbtKelas);
-    if (firstStd) {
+    if (firstStd && !matchedStudentByNisn) {
       setCbtStudentNipd(firstStd.nipd);
     }
-  }, [cbtKelas, students, isSiswaRole, authSession.nipd]);
+  }, [cbtKelas, students, isSiswaRole, authSession.nipd, matchedStudentByNisn]);
 
   const selectedCbtStudent = useMemo(() => {
+    if (matchedStudentByNisn) return matchedStudentByNisn;
     return students.find((s) => s.nipd === cbtStudentNipd) || students[0];
-  }, [students, cbtStudentNipd]);
+  }, [matchedStudentByNisn, students, cbtStudentNipd]);
 
   const pgCount = questions.filter((q) => q.bentuk === 'PG').length;
   const pgkCount = questions.filter((q) => q.bentuk === 'PGK').length;
@@ -257,6 +302,10 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
       now.getMinutes()
     ).padStart(2, '0')}`;
 
+    if (typeof document !== 'undefined' && document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+
     const resultRecord: CBTSubmission = {
       id: 'sub-' + Date.now(),
       waktuSelesai: timeStr,
@@ -274,13 +323,122 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
       benarPG: correctPGCount,
       detailBloom: bloomSummaryText,
       details,
+      violations: violationCount,
+      violationLogs: [...violationLogs],
     };
 
     setCbtLastResult(resultRecord);
     setCbtSubmissions((prev) => [resultRecord, ...prev]);
     setCbtConfirmSubmit(false);
+    setViolationModalOpen(false);
     setCbtStage('result');
   };
+
+  // Anti-Contek Violation Recorder
+  const recordViolation = (reason: string) => {
+    const now = Date.now();
+    // Debounce 1.5 detik agar satu tindakan tidak memicu double event (blur & visibilitychange)
+    if (now - lastViolationTimeRef.current < 1500) return;
+    lastViolationTimeRef.current = now;
+
+    const timeStr = new Date().toLocaleTimeString('id-ID');
+
+    setViolationCount((prev) => {
+      const nextCount = prev + 1;
+      const logEntry = `[${timeStr}] ${reason} (Peringatan #${nextCount})`;
+      setViolationLogs((logs) => [...logs, logEntry]);
+      setViolationReason(reason);
+      setViolationModalOpen(true);
+
+      if (nextCount >= MAX_CHEATING_VIOLATIONS) {
+        setIsExamLocked(true);
+      }
+      return nextCount;
+    });
+  };
+
+  // Anti-Contek Event Listeners: Deteksi Tab Switch, Window Blur, Fullscreen Exit, Shortcut, Context Menu
+  useEffect(() => {
+    if (cbtStage !== 'exam') return;
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        recordViolation('Membuka tab/jendela lain atau meminimalkan browser');
+      }
+    };
+
+    const handleWindowBlur = () => {
+      recordViolation('Fokus layar ujian hilang (beralih aplikasi/layar)');
+    };
+
+    const handleFullscreenChange = () => {
+      const isFull = Boolean(document.fullscreenElement);
+      setIsFullscreen(isFull);
+      if (!isFull && !cbtConfirmSubmit && !isExamLocked) {
+        recordViolation('Keluar dari mode Layar Penuh (Fullscreen)');
+      }
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+
+    const handleCopyCutPaste = (e: ClipboardEvent) => {
+      e.preventDefault();
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // F12 Inspect Element
+      if (e.key === 'F12') {
+        e.preventDefault();
+        recordViolation('Menekan tombol F12 (Inspect Element dilarang)');
+        return;
+      }
+      // Ctrl+Shift+I / J / C (DevTools)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'j', 'c'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        recordViolation('Membuka DevTools / Inspect Element dilarang');
+        return;
+      }
+      // Ctrl+U (View Source)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'u') {
+        e.preventDefault();
+        return;
+      }
+      // Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+X, Ctrl+P, Ctrl+S
+      if ((e.ctrlKey || e.metaKey) && ['c', 'v', 'a', 'x', 'p', 's'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        return;
+      }
+    };
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = 'Ujian CBT sedang berlangsung. Jika Anda keluar, jawaban Anda belum diserahkan!';
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    window.addEventListener('contextmenu', handleContextMenu);
+    window.addEventListener('copy', handleCopyCutPaste);
+    window.addEventListener('cut', handleCopyCutPaste);
+    window.addEventListener('paste', handleCopyCutPaste);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      window.removeEventListener('contextmenu', handleContextMenu);
+      window.removeEventListener('copy', handleCopyCutPaste);
+      window.removeEventListener('cut', handleCopyCutPaste);
+      window.removeEventListener('paste', handleCopyCutPaste);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [cbtStage, cbtConfirmSubmit, isExamLocked]);
 
   useEffect(() => {
     if (cbtStage !== 'exam') return;
@@ -297,20 +455,60 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
     return () => clearInterval(timer);
   }, [cbtStage]);
 
-  const handleStartCBT = (e: React.FormEvent) => {
+  const handleStartCBT = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (cbtTokenInput.trim().toUpperCase() !== config.tokenCBT.trim().toUpperCase()) {
+    setCbtLoginError('');
+
+    // Validasi NISN Siswa
+    const cleanNisn = cbtNisnInput.trim();
+    if (!cleanNisn && isSiswaRole) {
+      setCbtLoginError('Silakan masukkan 10 digit NISN Anda untuk verifikasi identitas peserta.');
+      return;
+    }
+
+    const matched = students.find(
+      (s) => s.nisn.trim() === cleanNisn || s.nipd.trim() === cleanNisn
+    );
+
+    if (isSiswaRole && !matched) {
       setCbtLoginError(
-        isSiswaRole
-          ? 'Token Ujian tidak sesuai. Mintalah token ujian yang aktif kepada Bapak/Ibu Guru.'
-          : `Token Ujian tidak sesuai. Gunakan token aktif: ${config.tokenCBT}`
+        'Nomor NISN tidak ditemukan dalam daftar peserta didik sekolah. Silakan periksa kembali nomor NISN Anda atau minta bantuan pengawas.'
       );
       return;
     }
-    if (questions.length === 0) {
-      setCbtLoginError('Belum ada soal yang tersedia. Silakan susun soal terlebih dahulu.');
+
+    // Validasi Token CBT
+    const activeToken = (activePackage?.tokenCBT || config.tokenCBT).trim().toUpperCase();
+    if (cbtTokenInput.trim().toUpperCase() !== activeToken) {
+      setCbtLoginError(
+        isSiswaRole
+          ? 'Token Ujian salah atau belum diaktifkan. Silakan minta Token Ujian yang benar kepada Bapak/Ibu Pengawas.'
+          : `Token Ujian tidak sesuai. Gunakan token aktif: ${activeToken}`
+      );
       return;
     }
+
+    if (questions.length === 0) {
+      setCbtLoginError('Belum ada butir soal yang tersedia pada paket ini.');
+      return;
+    }
+
+    // Set siswa aktif jika ditemukan dari NISN
+    if (matched) {
+      setCbtStudentNipd(matched.nipd);
+      setCbtKelas(matched.kelas);
+    }
+
+    // Request Layar Penuh (Anti-Contek)
+    try {
+      if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+        setIsFullscreen(true);
+      }
+    } catch {
+      // Browser mungkin membatasi jika interaksi tidak langsung
+    }
+
     const prepared = prepareQuestionsForPackage(
       questions,
       Boolean(activePackage?.acakSoal),
@@ -323,6 +521,10 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
     setCbtCurrentIndex(0);
     setCbtTimeLeft((Number(config.durasiMenit) || 60) * 60);
     setCbtConfirmSubmit(false);
+    setViolationCount(0);
+    setViolationLogs([]);
+    setViolationModalOpen(false);
+    setIsExamLocked(false);
     setCbtStage('exam');
   };
 
@@ -439,21 +641,25 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
         </div>
       </div>
 
-      {/* STAGE 1: LOGIN PESERTA CBT */}
+      {/* STAGE 1: LOGIN PESERTA CBT (NISN & TOKEN) */}
       {cbtStage === 'login' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-          <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="bg-emerald-900 text-white p-6">
-              <p className="text-xs font-semibold text-amber-300">
-                Login Peserta Didik · Tahun Pelajaran {config.tahunPelajaran}
-              </p>
+          <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+            <div className="bg-gradient-to-r from-emerald-900 to-teal-950 text-white p-6">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-amber-300">
+                  Login Peserta Didik · Tahun Pelajaran {config.tahunPelajaran}
+                </p>
+                <span className="inline-flex items-center gap-1.5 bg-amber-400/20 text-amber-200 border border-amber-400/40 text-[11px] font-bold px-2.5 py-0.5 rounded-full">
+                  <ShieldCheck className="w-3.5 h-3.5 text-amber-300" />
+                  Anti-Contek Aktif
+                </span>
+              </div>
               <h3 className="text-xl font-bold mt-1">
                 Portal Ujian CBT {schoolProfile.namaSingkat}
               </h3>
               <p className="text-xs text-emerald-100 mt-1">
-                {isSiswaRole
-                  ? `Akun siswa aktif: ${authSession.name} (${authSession.kelas}). Pilih paket ujian lalu masukkan Token Ujian dari Bapak/Ibu Guru.`
-                  : 'Pilih paket tes, kelas, dan nama lengkap sesuai daftar absen sekolah, lalu masukkan Token Ujian untuk memulai.'}
+                Peserta didik wajib masuk menggunakan <strong>NISN</strong> dan <strong>Token Ujian</strong> yang diberikan oleh Bapak/Ibu Guru pengawas.
               </p>
             </div>
 
@@ -502,99 +708,139 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
                 </select>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    1. Pilih Kelas Peserta
-                  </label>
-                  <select
-                    value={cbtKelas}
-                    disabled={isSiswaRole}
-                    onChange={(e) => setCbtKelas(e.target.value)}
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-semibold bg-slate-50 disabled:opacity-80 focus:ring-2 focus:ring-emerald-600 focus:outline-none"
-                  >
-                    {['Kelas 1', 'Kelas 2', 'Kelas 3', 'Kelas 4', 'Kelas 5', 'Kelas 6'].map(
-                      (k) => (
-                        <option key={k} value={k}>
-                          {k} ({students.filter((s) => s.kelas === k).length} Siswa)
-                        </option>
-                      )
-                    )}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    2. Masukkan Token Ujian
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={cbtTokenInput}
-                      onChange={(e) => setCbtTokenInput(e.target.value.toUpperCase())}
-                      placeholder="Masukkan Token dari Guru"
-                      className="w-full rounded-lg border border-emerald-400 bg-emerald-50/40 px-3 py-2.5 text-sm font-mono font-bold text-emerald-950 focus:ring-2 focus:ring-emerald-600 focus:outline-none"
-                    />
-                    <Key className="w-4 h-4 text-emerald-700 absolute right-3 top-3" />
-                  </div>
-                </div>
-              </div>
-
+              {/* 1. Input NISN Siswa */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  3. Pilih Nama Lengkap Peserta Didik ({cbtKelas})
-                </label>
-                <select
-                  value={cbtStudentNipd}
-                  disabled={isSiswaRole}
-                  onChange={(e) => setCbtStudentNipd(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-900 disabled:bg-slate-100 focus:ring-2 focus:ring-emerald-600 focus:outline-none"
-                >
-                  {students
-                    .filter((s) => s.kelas === cbtKelas)
-                    .map((s) => (
-                      <option key={s.nipd} value={s.nipd}>
-                        {s.no}. {s.nama} — NIPD: {s.nipd} | NISN: {s.nisn}
-                      </option>
-                    ))}
-                </select>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-800">
+                    1. Masukkan NISN Peserta Didik
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowManualLookup(!showManualLookup)}
+                    className="text-[11px] font-semibold text-emerald-800 hover:underline cursor-pointer"
+                  >
+                    {showManualLookup ? 'Tutup Daftar Bantuan' : 'Lupa NISN? Cari Nama'}
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={cbtNisnInput}
+                    onChange={(e) => setCbtNisnInput(e.target.value.trim())}
+                    placeholder="Masukkan 10 digit NISN peserta didik..."
+                    className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-emerald-600 focus:outline-none"
+                  />
+                  <UserCheck className="w-4 h-4 text-slate-400 absolute right-3.5 top-3" />
+                </div>
+
+                {matchedStudentByNisn ? (
+                  <div className="mt-2 bg-emerald-50 border border-emerald-300 rounded-lg p-3 flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <div>
+                        <span className="font-bold text-emerald-950 block">
+                          {matchedStudentByNisn.nama}
+                        </span>
+                        <span className="text-[11px] text-emerald-700">
+                          {matchedStudentByNisn.kelas} · NIPD: {matchedStudentByNisn.nipd} · NISN: {matchedStudentByNisn.nisn}
+                        </span>
+                      </div>
+                    </div>
+                    <span className="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded shrink-0">
+                      Teridentifikasi
+                    </span>
+                  </div>
+                ) : cbtNisnInput.trim() ? (
+                  <p className="mt-1 text-[11px] text-amber-700 font-medium">
+                    NISN belum terdaftar. Pastikan 10 digit nomor NISN Anda sudah benar sesuai kartu pelajar/rapor.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Ketik NISN yang tertera pada kartu ujian atau buku rapor Anda.
+                  </p>
+                )}
               </div>
 
-              {selectedCbtStudent && (
-                <div className="bg-slate-50 rounded-lg p-4 border border-slate-200 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                  <div>
-                    <span className="text-slate-500 block">NIPD / No Induk</span>
-                    <span className="font-mono font-bold text-slate-900">
-                      {selectedCbtStudent.nipd}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block">NISN</span>
-                    <span className="font-mono font-bold text-slate-900">
-                      {selectedCbtStudent.nisn}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block">Jenis Kelamin</span>
-                    <span className="font-semibold text-slate-900">
-                      {selectedCbtStudent.jk === 'L' ? 'Laki-laki (L)' : 'Perempuan (P)'}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block">Agama</span>
-                    <span className="font-semibold text-emerald-800">
-                      {selectedCbtStudent.agama}
-                    </span>
+              {/* Bantuan Cari Nama jika lupa NISN */}
+              {showManualLookup && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 space-y-3 text-xs">
+                  <p className="font-bold text-slate-800">Bantuan Pencarian Berdasarkan Daftar Kelas:</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-slate-600 block mb-1 font-semibold">Pilih Kelas</label>
+                      <select
+                        value={cbtKelas}
+                        onChange={(e) => setCbtKelas(e.target.value)}
+                        className="w-full rounded-lg border border-slate-300 px-2.5 py-2 bg-white font-semibold"
+                      >
+                        {['Kelas 1', 'Kelas 2', 'Kelas 3', 'Kelas 4', 'Kelas 5', 'Kelas 6'].map((k) => (
+                          <option key={k} value={k}>{k}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-slate-600 block mb-1 font-semibold">Pilih Nama Anda</label>
+                      <select
+                        value={cbtStudentNipd}
+                        onChange={(e) => {
+                          setCbtStudentNipd(e.target.value);
+                          const st = students.find((s) => s.nipd === e.target.value);
+                          if (st) setCbtNisnInput(st.nisn || st.nipd);
+                        }}
+                        className="w-full rounded-lg border border-slate-300 px-2.5 py-2 bg-white font-semibold"
+                      >
+                        {students
+                          .filter((s) => s.kelas === cbtKelas)
+                          .map((s) => (
+                            <option key={s.nipd} value={s.nipd}>
+                              {s.no}. {s.nama} ({s.nisn})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
                   </div>
                 </div>
               )}
 
+              {/* 2. Input Token Ujian */}
+              <div>
+                <label className="block text-xs font-bold text-slate-800 mb-1">
+                  2. Masukkan Token Ujian CBT
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={cbtTokenInput}
+                    onChange={(e) => setCbtTokenInput(e.target.value.toUpperCase())}
+                    placeholder="Contoh: MAT-1234"
+                    className="w-full rounded-lg border border-emerald-400 bg-emerald-50/40 px-3.5 py-2.5 text-sm font-mono font-bold text-emerald-950 focus:ring-2 focus:ring-emerald-600 focus:outline-none"
+                  />
+                  <Key className="w-4 h-4 text-emerald-700 absolute right-3.5 top-3" />
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Token ujian diberikan langsung oleh Bapak/Ibu Guru pengawas di dalam ruang ujian.
+                </p>
+              </div>
+
+              {/* Peringatan Anti-Contek & Layar Penuh */}
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-xs text-amber-950 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-bold text-amber-900">
+                  <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>Sistem Pengawasan &amp; Anti-Contek CBT:</span>
+                </div>
+                <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-800 pl-1">
+                  <li>Ujian ini wajib dikerjakan dalam mode <strong>Layar Penuh (Full Screen)</strong>.</li>
+                  <li>Dilarang beralih tab, meminimalkan jendela browser, atau membuka aplikasi lain.</li>
+                  <li>Pelanggaran perpindahan layar akan memicu <strong>Peringatan Otomatis</strong> (Maksimal 3 kali sebelum lembar ujian dikunci dan dikumpulkan otomatis).</li>
+                </ul>
+              </div>
+
               <button
                 type="submit"
-                className="w-full flex items-center justify-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-3 px-6 rounded-lg transition-colors cursor-pointer text-sm"
+                className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-700 to-teal-800 hover:from-emerald-800 hover:to-teal-900 text-white font-bold py-3.5 px-6 rounded-xl transition-all shadow-md cursor-pointer text-sm"
               >
                 <Play className="w-4 h-4 fill-current" />
-                <span>Mulai Kerjakan Ujian CBT</span>
+                <span>Mulai Ujian CBT (Mode Layar Penuh)</span>
               </button>
             </form>
           </div>
@@ -694,7 +940,7 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
                       <span>{selectedCbtStudent?.nama}</span>
                       <span className="text-slate-400 font-normal">·</span>
                       <span className="text-xs font-mono text-emerald-300">
-                        {selectedCbtStudent?.kelas} / NIPD {selectedCbtStudent?.nipd}
+                        {selectedCbtStudent?.kelas} / NISN {selectedCbtStudent?.nisn || selectedCbtStudent?.nipd}
                       </span>
                     </div>
                     <p className="text-xs text-slate-300">
@@ -703,9 +949,51 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {/* Anti-Contek Indicator */}
+                  <div
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                      violationCount > 0
+                        ? 'bg-rose-950/80 border-rose-500 text-rose-200'
+                        : 'bg-slate-800 border-slate-700 text-slate-200'
+                    }`}
+                    title="Sistem Pengawasan Layar Anti-Contek Aktif"
+                  >
+                    {violationCount > 0 ? (
+                      <ShieldAlert className="w-4 h-4 text-rose-400 animate-pulse" />
+                    ) : (
+                      <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    )}
+                    <span className="hidden sm:inline">Anti-Contek:</span>
+                    <span className={`font-mono font-bold ${violationCount > 0 ? 'text-amber-300' : 'text-emerald-400'}`}>
+                      {violationCount > 0 ? `Peringatan ${violationCount}/${MAX_CHEATING_VIOLATIONS}` : 'Aman'}
+                    </span>
+                  </div>
+
+                  {/* Tombol Fullscreen */}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+                          await document.documentElement.requestFullscreen();
+                          setIsFullscreen(true);
+                        } else if (document.fullscreenElement && document.exitFullscreen) {
+                          await document.exitFullscreen();
+                          setIsFullscreen(false);
+                        }
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                    className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-lg p-2 text-xs flex items-center justify-center cursor-pointer transition-colors"
+                    title={isFullscreen ? 'Keluar Layar Penuh' : 'Aktifkan Layar Penuh'}
+                  >
+                    {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+                  </button>
+
                   <div className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 flex items-center gap-1.5 text-xs">
-                    <span className="text-slate-400 mr-1">Ukuran Teks:</span>
+                    <span className="text-slate-400 mr-1 hidden sm:inline">Ukuran Teks:</span>
                     {[
                       { id: 'sm' as const, label: 'A-' },
                       { id: 'normal' as const, label: 'A' },
@@ -741,7 +1029,7 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
 
               {/* Exam Main Grid */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                <div className="lg:col-span-8 bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between min-h-[460px]">
+                <div className="lg:col-span-8 bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col justify-between min-h-[460px] select-none">
                   <div>
                     <div className="bg-slate-50 border-b border-slate-200 px-6 py-3.5 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2.5">
@@ -1143,6 +1431,25 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
             </div>
           </div>
 
+          {/* Status Integritas Anti-Contek */}
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-600" />
+              <span className="font-bold text-slate-800">Catatan Pengawasan Anti-Contek:</span>
+            </div>
+            <div>
+              {!cbtLastResult.violations || cbtLastResult.violations === 0 ? (
+                <span className="text-emerald-700 font-bold bg-emerald-100/60 border border-emerald-300 px-2.5 py-1 rounded-md">
+                  ✓ 100% Tertib (Tidak Ada Pelanggaran Layar)
+                </span>
+              ) : (
+                <span className="text-amber-800 font-bold bg-amber-100/60 border border-amber-300 px-2.5 py-1 rounded-md">
+                  ⚠️ Terdeteksi {cbtLastResult.violations}x Berpindah Layar / Aplikasi
+                </span>
+              )}
+            </div>
+          </div>
+
           <div className="space-y-3">
             <h4 className="font-bold text-slate-900 text-sm">
               Rincian Jawaban &amp; Analisis Kognitif Taksonomi Bloom
@@ -1257,6 +1564,7 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
                   <th className="p-3">Mata Pelajaran</th>
                   <th className="p-3 text-center">Skor</th>
                   <th className="p-3 text-center">Nilai Akhir</th>
+                  <th className="p-3 text-center">Anti-Contek</th>
                   <th className="p-3">Ketuntasan Taksonomi Bloom</th>
                 </tr>
               </thead>
@@ -1277,11 +1585,147 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
                     <td className="p-3 text-center font-mono font-bold text-emerald-800 text-sm">
                       {sub.nilaiAkhir}
                     </td>
+                    <td className="p-3 text-center">
+                      {!sub.violations || sub.violations === 0 ? (
+                        <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded text-[11px] font-semibold">
+                          <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                          <span>Tertib (0)</span>
+                        </span>
+                      ) : sub.violations >= MAX_CHEATING_VIOLATIONS ? (
+                        <span
+                          className="inline-flex items-center gap-1 bg-rose-50 text-rose-700 border border-rose-300 px-2 py-0.5 rounded text-[11px] font-bold cursor-help"
+                          title={sub.violationLogs?.join('\n') || 'Terkunci otomatis karena pelanggaran layar'}
+                        >
+                          <ShieldAlert className="w-3 h-3 text-rose-600" />
+                          <span>Terkunci ({sub.violations}x)</span>
+                        </span>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 bg-amber-50 text-amber-800 border border-amber-300 px-2 py-0.5 rounded text-[11px] font-semibold cursor-help"
+                          title={sub.violationLogs?.join('\n') || 'Terdeteksi beralih layar'}
+                        >
+                          <AlertTriangle className="w-3 h-3 text-amber-600" />
+                          <span>{sub.violations}x Teguran</span>
+                        </span>
+                      )}
+                    </td>
                     <td className="p-3 font-mono text-[11px] text-slate-600">{sub.detailBloom}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PERINGATAN KECURANGAN / ANTI-CONTEK OVERLAY */}
+      {violationModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl border-2 border-rose-500 animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-rose-700 to-red-800 text-white p-5 text-center">
+              <div className="w-14 h-14 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-3 animate-pulse">
+                <ShieldAlert className="w-8 h-8 text-amber-300" />
+              </div>
+              <h3 className="text-lg font-extrabold uppercase tracking-wide">
+                {isExamLocked ? 'LEMBAR UJIAN DIKUNCI!' : 'PERINGATAN KECURANGAN TERDETEKSI!'}
+              </h3>
+              <p className="text-xs text-rose-100 mt-1">
+                Sistem Pengawasan Asesmen Daring — Anti-Contek Aktif
+              </p>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4 text-xs">
+              <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-rose-950 space-y-1.5">
+                <p className="font-bold flex items-center gap-1.5 text-sm text-rose-800">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>Aksi yang Terdeteksi:</span>
+                </p>
+                <p className="text-xs font-semibold pl-5">
+                  &ldquo;{violationReason || 'Meninggalkan jendela ujian / membuka aplikasi lain'}&rdquo;
+                </p>
+              </div>
+
+              {/* Violation Meter */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center font-bold">
+                  <span className="text-slate-700">Jumlah Peringatan Pelanggaran:</span>
+                  <span
+                    className={`font-mono text-sm ${
+                      violationCount >= MAX_CHEATING_VIOLATIONS ? 'text-rose-700 font-extrabold' : 'text-amber-700'
+                    }`}
+                  >
+                    {violationCount} dari batas maksimal {MAX_CHEATING_VIOLATIONS} kali
+                  </span>
+                </div>
+                <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${
+                      violationCount >= MAX_CHEATING_VIOLATIONS
+                        ? 'bg-rose-600'
+                        : violationCount === 2
+                        ? 'bg-amber-500'
+                        : 'bg-emerald-500'
+                    }`}
+                    style={{ width: `${Math.min(100, (violationCount / MAX_CHEATING_VIOLATIONS) * 100)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-600 space-y-1 text-[11px]">
+                <p className="font-semibold text-slate-800">Perhatian Peserta Didik:</p>
+                <ul className="list-disc list-inside space-y-0.5">
+                  <li>Anda dilarang beralih tab, meminimalkan browser, membuka aplikasi lain, atau keluar dari layar penuh.</li>
+                  <li>Setiap aktivitas perpindahan layar tercatat dan langsung dilaporkan kepada Guru / Pengawas Ujian.</li>
+                  {isExamLocked ? (
+                    <li className="font-bold text-rose-700">
+                      Anda telah mencapai batas maksimal toleransi ({MAX_CHEATING_VIOLATIONS}x). Lembar ujian dikunci dan harus segera dikumpulkan.
+                    </li>
+                  ) : (
+                    <li>
+                      Sisa toleransi kesempatan: <strong>{Math.max(0, MAX_CHEATING_VIOLATIONS - violationCount)} kali</strong> lagi sebelum lembar ujian terkunci otomatis.
+                    </li>
+                  )}
+                </ul>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-2">
+                {isExamLocked ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setViolationModalOpen(false);
+                      handleFinishCBTExam();
+                    }}
+                    className="w-full py-3 bg-rose-700 hover:bg-rose-800 text-white font-bold rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2 cursor-pointer text-sm"
+                  >
+                    <Lock className="w-4 h-4" />
+                    <span>Kumpulkan Lembar Jawaban Sekarang</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+                          await document.documentElement.requestFullscreen();
+                          setIsFullscreen(true);
+                        }
+                      } catch {
+                        // ignore
+                      }
+                      setViolationModalOpen(false);
+                    }}
+                    className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2 cursor-pointer text-sm"
+                  >
+                    <Maximize className="w-4 h-4" />
+                    <span>Saya Mengerti, Kembali ke Layar Penuh Ujian</span>
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}

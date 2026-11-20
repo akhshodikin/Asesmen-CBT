@@ -21,6 +21,7 @@ export interface AuthSession {
   identifier: string; // NIPD for siswa, NIP for guru/kepsek, ADMIN for admin
   kelas?: string;
   nipd?: string;
+  nisn?: string;
   loggedInAt: string;
 }
 
@@ -164,6 +165,8 @@ export interface CBTSubmission {
   benarPG: number;
   detailBloom: string;
   details?: CBTDetail[];
+  violations?: number;
+  violationLogs?: string[];
 }
 
 export interface StudentGradeRecord {

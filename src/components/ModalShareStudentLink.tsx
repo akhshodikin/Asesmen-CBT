@@ -87,16 +87,19 @@ export const ModalShareStudentLink: React.FC<ModalShareStudentLinkProps> = ({
 *${namaSekolah.toUpperCase()}*
 
 Yth. Bapak/Ibu Wali Murid dan Peserta Didik,
-Berikut adalah tautan resmi pelaksanaan Ujian CBT Daring:
+Berikut adalah tautan resmi pelaksanaan Asesmen CBT Daring:
 
 📚 *Mata Pelajaran:* ${config.mapel}
 🏛 *Kelas:* ${kelasText}
 ${includeToken && customToken ? `🔑 *Token Ujian:* ${customToken.toUpperCase()}\n` : ''}⏱ *Durasi:* ${config.durasiMenit || 60} Menit
 
-👉 *KLIK TAUTAN UNTUK LANGSUNG MULAI UJIAN:*
+👉 *KLIK TAUTAN UNTUK MEMULAI UJIAN:*
 ${studentUrl}
 
-_Petunjuk: Buka tautan di HP/Laptop/Komputer. Pilih nama peserta didik pada daftar kelas, masukkan token jika diminta, lalu klik Mulai Mengerjakan Ujian._`;
+_Petunjuk Masuk & Tata Tertib:_
+1. Buka tautan di HP / Laptop / Komputer.
+2. Masukkan *NISN (Nomor Induk Siswa Nasional)* masing-masing dan Token Ujian.
+3. *Sistem Anti-Contek Aktif:* Ujian wajib dikerjakan dalam layar penuh. Dilarang berpindah tab atau membuka aplikasi lain agar lembar ujian tidak terkunci otomatis.`;
   }, [schoolProfile, config, selectedKelas, includeToken, customToken, studentUrl]);
 
   const handleCopyLink = () => {

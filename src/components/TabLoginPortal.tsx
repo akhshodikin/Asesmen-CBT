@@ -141,9 +141,10 @@ export const TabLoginPortal: React.FC<TabLoginPortalProps> = ({
       const session: AuthSession = {
         role: 'siswa',
         name: selectedStudent.nama,
-        identifier: selectedStudent.nipd,
+        identifier: selectedStudent.nisn || selectedStudent.nipd,
         kelas: selectedStudent.kelas,
         nipd: selectedStudent.nipd,
+        nisn: selectedStudent.nisn,
         loggedInAt: now,
       };
       onLoginSuccess(session);
@@ -387,15 +388,15 @@ export const TabLoginPortal: React.FC<TabLoginPortalProps> = ({
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="font-semibold text-slate-700">
-                      NIPD atau NISN Peserta Didik
+                      NISN (Nomor Induk Siswa Nasional) / NIPD
                     </label>
                     {selectedStudent && (
                       <button
                         type="button"
-                        onClick={() => setSiswaPinInput(selectedStudent.nipd)}
+                        onClick={() => setSiswaPinInput(selectedStudent.nisn || selectedStudent.nipd)}
                         className="text-[11px] font-semibold text-emerald-700 hover:underline cursor-pointer"
                       >
-                        Isi NIPD Otomatis ({selectedStudent.nipd})
+                        Isi NISN Otomatis ({selectedStudent.nisn || selectedStudent.nipd})
                       </button>
                     )}
                   </div>
@@ -403,7 +404,7 @@ export const TabLoginPortal: React.FC<TabLoginPortalProps> = ({
                     type="text"
                     value={siswaPinInput}
                     onChange={(e) => setSiswaPinInput(e.target.value)}
-                    placeholder="Masukkan NIPD atau NISN..."
+                    placeholder="Masukkan 10 digit NISN peserta didik..."
                     className="w-full border border-slate-300 rounded-lg px-3 py-2.5 font-mono"
                   />
                 </div>
