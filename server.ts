@@ -542,6 +542,57 @@ async function startServer() {
     }
   });
 
+  // Endpoint Ekstraksi & Penyusunan Soal Otomatis dari Teks Mentah (Word/PDF/Text)
+  app.post('/api/parse-raw-questions-ai', async (req: Request, res: Response) => {
+    try {
+      const { rawText, mapel, kelas, apiKey } = req.body ?? {};
+      if (!rawText || typeof rawText !== 'string' || rawText.trim().length === 0) {
+        res.status(400).json({ error: 'Teks dokumen kosong.' });
+        return;
+      }
+
+      const client = getGeminiClient(typeof apiKey === 'string' && apiKey.trim() ? apiKey.trim() : undefined);
+      const model = getGeminiModelName();
+
+      const systemPrompt = `Anda adalah pakar kurikulum dan evaluasi asesmen SDN Kandangan I Tosari.
+Tugas Anda adalah membaca naskah ujian mentah yang diekstrak dari dokumen Word (.docx) atau PDF (.pdf), lalu menyusunnya menjadi daftar butir soal asesmen yang terstruktur rapi.
+
+ATURAN STRUKTUR:
+1. Ekstrak setiap nomor soal, stimulus (jika ada teks bacaan/konteks), pertanyaan, opsi jawaban A/B/C/D (jika pilihan ganda), kunci jawaban, dan pembahasan singkat.
+2. Perbaiki nomor soal berurutan (1, 2, 3, dst).
+3. Jika soal tidak memiliki kunci jawaban tertulis, tentukan kunci jawaban yang paling benar dan tulis pembahasannya secara singkat.
+4. Tentukan bentuk soal: "PG" (Pilihan Ganda), "PGK" (Pilihan Ganda Kompleks), "Isian", "Uraian", atau "Mencocokkan".
+5. Materi diisi: "${mapel || 'Umum'}".`;
+
+      const promptText = `Berikut adalah teks mentah dokumen ujian (Mata Pelajaran: ${mapel || 'Umum'}, Kelas: ${kelas || 'Kelas 5'}):
+"""
+${rawText.slice(0, 12000)}
+"""
+
+Susun seluruh butir soal di atas ke dalam format JSON terstruktur.`;
+
+      const response = await client.models.generateContent({
+        model,
+        contents: promptText,
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: questionItemSchema,
+          },
+          temperature: 0.1,
+        },
+      });
+
+      const parsedJson = JSON.parse(response.text?.trim() || '[]');
+      res.json({ questions: parsedJson });
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: errMsg || 'Gagal memproses naskah soal dengan AI.' });
+    }
+  });
+
   // Endpoint Penyusunan Paket Soal Asesmen (Didukung Multi-Provider)
   app.post('/api/generate-questions', async (req: Request, res: Response) => {
     try {

@@ -247,21 +247,95 @@ export function parseQuestionsFromJSON(rawContent: string): ParseResult {
 }
 
 /**
- * 2. PARSER TEKS STANDAR / FORMAT AIKEN / SOAL GURU
- * Mendukung format:
- * 1. Pertanyaan...
- * A. Opsi 1
- * B. Opsi 2
- * KUNCI: A
- * PEMBAHASAN: ...
+ * 2. PARSER TEKS STANDAR / FORMAT AIKEN / SOAL DARI WORD & PDF
+ * Mendukung berbagai format penulisan soal guru:
+ * - Nomor: 1., 1), (1), No. 1, Soal 1:, [1], atau nomor pada baris terpisah (tabel Word)
+ * - Opsi: A., a., (A), (a), A), a), A -, atau beberapa opsi dalam 1 baris
+ * - Kunci: Kunci: A, Jawaban: A, Answer: A, KUNCI = A, atau di akhir baris (Kunci: A)
+ * - Pembahasan & Skor opsional
  */
 export function parseQuestionsFromText(rawText: string): ParseResult {
   const warnings: string[] = [];
-  const lines = rawText
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .split('\n');
+  if (!rawText || rawText.trim().length === 0) {
+    return {
+      questions: [],
+      detectedFormat: 'Teks / Aiken',
+      totalDetected: 0,
+      warnings: ['Teks naskah soal kosong.'],
+      error: 'Teks kosong.',
+    };
+  }
 
+  // Tahap 1: Normalisasi karakter khusus dan non-breaking spaces
+  const cleanText = rawText
+    .replace(/\u00A0/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+
+  const rawLines = cleanText.split('\n');
+
+  // Tahap 2: Pra-pemrosesan baris (Pre-processing)
+  // Menghubungkan nomor/opsi yang terpisah baris akibat tabel Word/PDF
+  const normalizedLines: string[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    let line = rawLines[i].trim();
+    if (!line) continue;
+
+    // Abaikan kop surat atau petunjuk umum jika berada di awal dokumen
+    if (
+      line.match(/^(?:PEMERINTAH|DINAS PENDIDIKAN|KOORDINATOR WILAYAH|SEKOLAH DASAR|SDN KANDANGAN)/i) ||
+      line.match(/^(?:PENILAIAN|ASESMEN|SUMATIF|UJIAN|ULANGAN|PTS|PAS|PAT|SAS|SAT)\s+/i) ||
+      line.match(/^(?:MATA PELAJARAN|KELAS|HARI|TANGGAL|WAKTU|NAMA|NO\.?\s*ABSEN)\s*[:=]/i) ||
+      line.match(/^(?:PETUNJUK UMUM|BERILAH TANDA SILANG|PILIHLAH SALAH SATU JAWABAN YANG PALING BENAR)/i)
+    ) {
+      continue;
+    }
+
+    // Jika baris hanya berisi nomor tunggal (misal: "1.", "1", "(1)", "1)") akibat sel tabel Word
+    const standaloneNum = line.match(/^(?:(?:SOAL|NO|NOMOR)\s*)?\[?(\d+)\]?[\.\:\)]?$/i);
+    if (standaloneNum && i + 1 < rawLines.length) {
+      const nextLine = rawLines[i + 1].trim();
+      if (nextLine && !nextLine.match(/^(?:(?:SOAL|NO|NOMOR)\s*)?\[?(\d+)\]?[\.\:\)]?$/i)) {
+        line = `${standaloneNum[1]}. ${nextLine}`;
+        i++; // lewati baris berikutnya karena sudah digabung
+      }
+    }
+
+    // Jika baris hanya berisi huruf opsi tunggal (misal: "A.", "A", "a.") akibat sel tabel Word
+    const standaloneOpt = line.match(/^([A-Ea-e])[\.\)]?$/);
+    if (standaloneOpt && i + 1 < rawLines.length) {
+      const nextLine = rawLines[i + 1].trim();
+      if (nextLine && !nextLine.match(/^([A-Ea-e])[\.\)]?$/)) {
+        line = `${standaloneOpt[1].toUpperCase()}. ${nextLine}`;
+        i++;
+      }
+    }
+
+    // Ekstrak jika ada kunci jawaban di ujung baris (misal: "... (Kunci: A)" atau "... [Jawaban: B]")
+    const inlineKeyAtEnd = line.match(/[\(\[]\s*(?:KUNCI|JAWABAN|ANSWER)\s*[:=]?\s*([A-Ea-e])\s*[\)\]]$/i);
+    if (inlineKeyAtEnd) {
+      const extractedKey = inlineKeyAtEnd[1].toUpperCase();
+      line = line.replace(inlineKeyAtEnd[0], '').trim();
+      normalizedLines.push(line);
+      normalizedLines.push(`KUNCI: ${extractedKey}`);
+      continue;
+    }
+
+    // Jika 1 baris memuat beberapa opsi sekaligus (A. Bintang  B. Rantai  C. Pohon  D. Banteng)
+    if (line.match(/[A-Ea-e][\.\)]\s+.+\s+[B-Eb-e][\.\)]\s+/)) {
+      const parts = line.split(/\s+(?=[A-Ea-e][\.\)]\s+)/);
+      if (parts.length >= 2) {
+        for (const p of parts) {
+          if (p.trim()) normalizedLines.push(p.trim());
+        }
+        continue;
+      }
+    }
+
+    normalizedLines.push(line);
+  }
+
+  // Tahap 3: Parsing Butir Soal
   const questions: QuestionItem[] = [];
   let currentNomor = 1;
   let currentStimulus = '';
@@ -278,9 +352,9 @@ export function parseQuestionsFromText(rawText: string): ParseResult {
     if (currentPertanyaan.trim() || currentOpsi.length > 0) {
       let finalBentuk: QuestionShape = currentBentuk;
       if (currentOpsi.length === 0 && !finalBentuk) {
-        finalBentuk = currentKunci.length > 5 ? 'Uraian' : 'Isian';
-      } else if (currentOpsi.length > 0 && finalBentuk === 'Isian') {
-        finalBentuk = 'PG';
+        finalBentuk = currentKunci.length > 10 ? 'Uraian' : 'Isian';
+      } else if (currentOpsi.length > 0) {
+        finalBentuk = currentKunci.includes(',') ? 'PGK' : 'PG';
       }
 
       questions.push({
@@ -313,21 +387,8 @@ export function parseQuestionsFromText(rawText: string): ParseResult {
     currentBentuk = 'PG';
   };
 
-  for (let i = 0; i < lines.length; i++) {
-    const rawLine = lines[i];
-    const line = rawLine.trim();
-
-    if (!line) continue;
-
-    // Abaikan kop dokumen atau petunjuk umum naskah Word/PDF
-    if (
-      line.match(/^(?:PEMERINTAH|DINAS PENDIDIKAN|KOORDINATOR WILAYAH|SEKOLAH DASAR|SDN KANDANGAN)/i) ||
-      line.match(/^(?:PENILAIAN|ASESMEN|SUMATIF|UJIAN|ULANGAN|PTS|PAS|PAT|SAS|SAT)\s+/i) ||
-      line.match(/^(?:MATA PELAJARAN|KELAS|HARI|TANGGAL|WAKTU|NAMA|NO\.?\s*ABSEN)\s*[:=]/i) ||
-      line.match(/^(?:PETUNJUK|PILIHLAH|BERILAH TANDA SILANG|JAWABLAH)/i)
-    ) {
-      continue;
-    }
+  for (let i = 0; i < normalizedLines.length; i++) {
+    const line = normalizedLines[i];
 
     // Deteksi Kunci Jawaban
     const keyMatch = line.match(/^(?:KUNCI(?:\s+JAWABAN)?|ANSWER|JAWABAN|Kunci|KUNCI\s*:)\s*[:=]?\s*(.+)$/i);
@@ -371,39 +432,23 @@ export function parseQuestionsFromText(rawText: string): ParseResult {
       continue;
     }
 
-    // Deteksi jika 1 baris memuat beberapa opsi sekaligus di Word/PDF (misal: "A. Bintang   B. Rantai   C. Pohon   D. Kepala Banteng")
-    if (line.match(/^[A-Ea-e][\.\)]\s+.+\s+[B-Eb-e][\.\)]\s+/)) {
-      const parts = line.split(/\s+(?=[A-Ea-e][\.\)]\s+)/);
-      if (parts.length >= 2) {
-        for (const p of parts) {
-          const m = p.match(/^([A-Ea-e])[\.\)]\s*(.+)$/);
-          if (m) {
-            currentOpsi.push(`${m[1].toUpperCase()}. ${m[2].trim()}`);
-          }
-        }
-        continue;
+    // Deteksi Awal Nomor Soal Baru (misal: "1. ", "1) ", "(1) ", "No. 1. ", "1 . ")
+    const numMatch = line.match(/^(?:(?:SOAL|NO|NOMOR)\s*)?\[?\(?(\d+)\)?\]?\s*[\.\:\)]\s*(.*)$/i);
+    if (numMatch) {
+      const rest = numMatch[2].trim();
+      if (currentPertanyaan || currentOpsi.length > 0) {
+        flushQuestion();
       }
+      currentPertanyaan = rest;
+      continue;
     }
 
-    // Deteksi Opsi Pilihan Tunggal (A., B., C., D. atau A), B), C), D) atau 1), 2), dst)
-    const optMatch = line.match(/^([A-Ea-e])[\.\)]\s*(.+)$/);
-    if (optMatch) {
+    // Deteksi Opsi Pilihan (A., B., C., D. atau A), B), C), D) atau (A), (B) atau a., b., c.)
+    const optMatch = line.match(/^(?:\[|\()?([A-Ea-e])(?:\.|\)|\:|\-|\s*\.)\s*(.+)$/);
+    if (optMatch && currentPertanyaan) {
       const optLetter = optMatch[1].toUpperCase();
       const optText = optMatch[2].trim();
       currentOpsi.push(`${optLetter}. ${optText}`);
-      continue;
-    }
-
-    // Deteksi Awal Nomor Soal Baru (misal: "1. ", "1) ", "Soal 1:", "[1] ")
-    const numMatch = line.match(/^(?:(?:SOAL|NO|NOMOR)\s*)?\[?(\d+)\]?[\.\:\)]\s*(.+)$/i);
-    if (numMatch && (currentPertanyaan || currentOpsi.length > 0)) {
-      // Ada nomor baru dan sudah ada soal sebelumnya yang terkumpul -> simpan soal sebelumnya
-      flushQuestion();
-      currentPertanyaan = numMatch[2].trim();
-      continue;
-    } else if (numMatch && !currentPertanyaan && currentOpsi.length === 0) {
-      // Ini adalah nomor soal pertama
-      currentPertanyaan = numMatch[2].trim();
       continue;
     }
 
@@ -411,12 +456,12 @@ export function parseQuestionsFromText(rawText: string): ParseResult {
     if (currentPembahasan) {
       currentPembahasan += ' ' + line;
     } else if (currentOpsi.length > 0) {
-      // Melanjutkan opsi terakhir
+      // Baris kelanjutan dari opsi terakhir
       currentOpsi[currentOpsi.length - 1] += ' ' + line;
     } else if (currentPertanyaan) {
       currentPertanyaan += '\n' + line;
     } else {
-      // Mungkin stimulus awal
+      // Sebelum nomor soal pertama muncul, kemungkinan stimulus umum
       currentStimulus = (currentStimulus ? currentStimulus + '\n' : '') + line;
     }
   }
@@ -424,12 +469,63 @@ export function parseQuestionsFromText(rawText: string): ParseResult {
   // Simpan butir terakhir
   flushQuestion();
 
+  // Tahap 4: Fallback Strategi Jika Parser Nomor Belum Menemukan Soal
+  // (Misal teks tidak memiliki nomor 1, 2, tapi memiliki pertanyaan dan opsi A, B, C)
+  if (questions.length === 0) {
+    const blocks = cleanText.split(/\n\s*\n+/);
+    for (const block of blocks) {
+      const blockLines = block.split('\n').map((l) => l.trim()).filter(Boolean);
+      if (blockLines.length === 0) continue;
+
+      let qText = '';
+      const opts: string[] = [];
+      let qKey = '';
+
+      for (const bl of blockLines) {
+        const kMatch = bl.match(/^(?:KUNCI|JAWABAN|ANSWER)\s*[:=]?\s*(.+)$/i);
+        if (kMatch) {
+          qKey = kMatch[1].trim();
+          continue;
+        }
+        const oMatch = bl.match(/^(?:\[|\()?([A-Ea-e])(?:\.|\)|\:|\-|\s*\.)\s*(.+)$/);
+        if (oMatch) {
+          opts.push(`${oMatch[1].toUpperCase()}. ${oMatch[2].trim()}`);
+          continue;
+        }
+        if (opts.length === 0) {
+          qText += (qText ? ' ' : '') + bl;
+        }
+      }
+
+      if (qText && opts.length >= 2) {
+        questions.push({
+          nomor: questions.length + 1,
+          bentuk: 'PG',
+          stimulus: '',
+          pertanyaan: qText.replace(/^(?:(?:SOAL|NO|NOMOR)\s*)?\[?\(?\d+\)?\]?\s*[\.\:\)]\s*/i, ''),
+          opsi: opts,
+          kunci: qKey || 'A',
+          pembahasan: '',
+          skor: 10,
+          materi: 'Umum',
+          indikator: '',
+          bloom: 'C2',
+          kesulitan: 'Sedang',
+          dimensi: 'Penalaran Kritis',
+        });
+      }
+    }
+  }
+
   if (questions.length === 0) {
     return {
       questions: [],
       detectedFormat: 'Teks / Aiken',
       totalDetected: 0,
-      warnings: ['Teks tidak mengandung struktur soal yang dapat dikenali.'],
+      warnings: [
+        'Teks belum dapat dikenali secara otomatis dengan pola standar.',
+        'Saran: Pastikan soal diawali nomor (1., 2., dst) dan opsi (A., B., C., D.), atau gunakan tombol "🤖 Bantu Susun dengan AI" di bawah.',
+      ],
       error: 'Tidak dapat mendeteksi nomor atau opsi soal dalam teks.',
     };
   }
@@ -776,4 +872,104 @@ export function convertToBankQuestions(
     sumber: sumber as any,
     createdAt: now,
   }));
+}
+
+/**
+ * AI-Assisted Question Structuring:
+ * Membantu merapikan dan mengekstrak butir soal dari teks mentah dokumen
+ * jika format teks sangat tidak beraturan, tabel acak, atau hasil OCR
+ */
+export async function parseQuestionsWithAI(
+  rawText: string,
+  mapel: string,
+  kelas: string
+): Promise<ParseResult> {
+  const geminiKey =
+    (typeof window !== 'undefined' ? window.localStorage.getItem('gemini_api_key') : '') || '';
+
+  // 1. Coba lewat backend server
+  try {
+    const res = await fetch('/api/parse-raw-questions-ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rawText, mapel, kelas, apiKey: geminiKey }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.questions) && data.questions.length > 0) {
+        return {
+          questions: data.questions,
+          detectedFormat: 'Teks / Disusun AI' as any,
+          totalDetected: data.questions.length,
+          warnings: ['Butir soal berhasil dirapikan dan disusun secara cerdas oleh AI Gemini.'],
+        };
+      }
+    }
+  } catch {
+    // jika server tidak ada atau deployed statis di Firebase
+  }
+
+  // 2. Direct client-side fetch ke Google Gemini jika API Key tersedia
+  if (geminiKey) {
+    try {
+      const prompt = `Anda adalah asisten kurikulum SDN Kandangan I Tosari. Tugas Anda:
+Baca teks naskah ujian berikut dan susun seluruh butir soal ke dalam JSON array object valid:
+[
+  {
+    "nomor": 1,
+    "bentuk": "PG",
+    "stimulus": "",
+    "pertanyaan": "Soal...",
+    "opsi": ["A. ...", "B. ...", "C. ...", "D. ..."],
+    "kunci": "A",
+    "pembahasan": "Penjelasan...",
+    "skor": 10,
+    "materi": "${mapel || 'Umum'}",
+    "bloom": "C2",
+    "kesulitan": "Sedang",
+    "dimensi": "Penalaran Kritis"
+  }
+]
+
+Mata Pelajaran: ${mapel || 'Umum'} | Kelas: ${kelas || 'Kelas 5'}
+Teks Naskah Soal:
+"""
+${rawText.slice(0, 10000)}
+"""`;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.1,
+            },
+          }),
+        }
+      );
+
+      if (response.ok) {
+        const json = await response.json();
+        const contentText = json.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (contentText) {
+          const parsed = parseQuestionsFromJSON(contentText);
+          if (parsed.questions.length > 0) {
+            return {
+              ...parsed,
+              detectedFormat: 'Teks / Disusun AI' as any,
+              warnings: ['Butir soal berhasil dirapikan dan distrukturkan oleh AI Gemini.'],
+            };
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  throw new Error('Gagal merapikan teks dengan AI. Pastikan file berisi naskah soal atau atur GEMINI_API_KEY di menu Setting API.');
 }

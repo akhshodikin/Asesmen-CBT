@@ -62,6 +62,7 @@ import {
   downloadQuestionTemplateJSON,
   downloadQuestionTemplateTXT,
   extractTextFromFile,
+  parseQuestionsWithAI,
   type ParseResult,
 } from '../utils/questionImportExport';
 
@@ -233,6 +234,7 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
   const [uploadParseResult, setUploadParseResult] = useState<ParseResult | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isParsingUpload, setIsParsingUpload] = useState(false);
+  const [isParsingAI, setIsParsingAI] = useState(false);
 
   const notify = (msg: string) => {
     setErrorMsg('');
@@ -843,6 +845,24 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
       setUploadParseResult(parsed);
     } else {
       setUploadParseResult(null);
+    }
+  };
+
+  const handleParseWithAI = async () => {
+    if (!uploadRawText || uploadRawText.trim().length === 0) {
+      setErrorMsg('Belum ada teks yang dapat diproses dengan AI. Silakan unggah dokumen atau tempel teks soal terlebih dahulu.');
+      return;
+    }
+    setIsParsingAI(true);
+    setErrorMsg('');
+    try {
+      const res = await parseQuestionsWithAI(uploadRawText, uploadMapel, uploadKelas);
+      setUploadParseResult(res);
+      notify(`🎉 Berhasil! AI berhasil mengekstrak & merapikan ${res.totalDetected} butir soal dari dokumen.`);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Gagal merapikan teks dengan AI. Pastikan file berisi naskah soal.');
+    } finally {
+      setIsParsingAI(false);
     }
   };
 
@@ -3087,13 +3107,34 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
               {/* Tab Content: Paste Text */}
               {uploadInputTab === 'paste' && (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-slate-700">
-                      Tempelkan Teks Naskah Soal Anda di Bawah Ini:
-                    </label>
-                    <span className="text-[11px] text-slate-500">
-                      Parser otomatis mendeteksi nomor, opsi A/B/C/D, kunci, dan pembahasan.
-                    </span>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <label className="text-xs font-bold text-slate-700 block">
+                        Teks Naskah Soal (Hasil Ekstraksi Dokumen atau Tempel Manual):
+                      </label>
+                      <span className="text-[11px] text-slate-500">
+                        {uploadRawText.length > 0
+                          ? `${uploadRawText.length} karakter teks siap dianalisis.`
+                          : 'Parser otomatis mendeteksi nomor, opsi A/B/C/D, kunci, dan pembahasan.'}
+                      </span>
+                    </div>
+
+                    {uploadRawText.trim().length > 20 && (
+                      <button
+                        type="button"
+                        onClick={handleParseWithAI}
+                        disabled={isParsingAI}
+                        className="flex items-center gap-1.5 bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-800 hover:to-indigo-800 text-white text-xs font-bold px-3.5 py-1.5 rounded-lg cursor-pointer transition-all shadow-xs disabled:opacity-50"
+                        title="Gunakan AI Gemini untuk merapikan teks dokumen yang tidak beraturan menjadi butir soal terstruktur"
+                      >
+                        {isParsingAI ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-300" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                        )}
+                        <span>{isParsingAI ? 'AI Sedang Menyusun...' : '🤖 Rapikan dengan AI'}</span>
+                      </button>
+                    )}
                   </div>
                   <textarea
                     rows={8}
@@ -3229,11 +3270,43 @@ KUNCI: B`}
                   </div>
 
                   {uploadParseResult.warnings && uploadParseResult.warnings.length > 0 && (
-                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 space-y-1">
-                      <span className="font-bold block">Catatan Parser:</span>
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-900 space-y-2.5">
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
+                        <span className="font-bold text-amber-950">Catatan Analisis Dokumen:</span>
+                      </div>
                       {uploadParseResult.warnings.map((w, idx) => (
-                        <p key={idx}>• {w}</p>
+                        <p key={idx} className="leading-relaxed">• {w}</p>
                       ))}
+
+                      {uploadParseResult.questions.length === 0 && (
+                        <div className="pt-2 border-t border-amber-200/80 flex flex-wrap items-center gap-2">
+                          {uploadRawText.trim().length > 20 && (
+                            <button
+                              type="button"
+                              onClick={handleParseWithAI}
+                              disabled={isParsingAI}
+                              className="flex items-center gap-2 bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-800 hover:to-indigo-800 text-white font-bold px-4 py-2 rounded-lg cursor-pointer transition-all shadow-xs disabled:opacity-50"
+                            >
+                              {isParsingAI ? (
+                                <RefreshCw className="w-4 h-4 animate-spin text-amber-300" />
+                              ) : (
+                                <Sparkles className="w-4 h-4 text-amber-300" />
+                              )}
+                              <span>{isParsingAI ? 'AI Sedang Menyusun Soal...' : '🤖 Rapikan & Susun Otomatis dengan AI (Gemini)'}</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => setUploadInputTab('paste')}
+                            className="flex items-center gap-1.5 bg-white border border-amber-300 hover:bg-amber-100 text-amber-950 font-semibold px-3 py-2 rounded-lg cursor-pointer transition-colors"
+                          >
+                            <FileText className="w-3.5 h-3.5 text-purple-700" />
+                            <span>Buka Teks Hasil Ekstraksi ({uploadRawText.length} karakter)</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
 
