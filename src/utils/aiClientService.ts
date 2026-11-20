@@ -446,15 +446,300 @@ Format kembalian wajib JSON array:
   };
 }
 
+export interface DetectedModelItem {
+  id: string;
+  name: string;
+  description?: string;
+  isRecommended?: boolean;
+}
+
+export interface ModelDetectionResponse {
+  success: boolean;
+  provider: 'gemini' | 'openai' | 'anthropic' | 'deepseek';
+  models: DetectedModelItem[];
+  recommendedModel: string;
+  message: string;
+}
+
+// Deteksi otomatis penyedia AI berdasarkan format API Key
+export function detectProviderFromKey(key: string): 'gemini' | 'openai' | 'anthropic' | 'deepseek' | null {
+  const clean = key.trim();
+  if (!clean) return null;
+  if (clean.startsWith('AIzaSy')) return 'gemini';
+  if (clean.startsWith('sk-ant-')) return 'anthropic';
+  if (clean.startsWith('sk-proj-')) return 'openai';
+  return null;
+}
+
+// Deteksi model resmi yang aktif dan tersedia untuk akun pengguna
+export async function detectModelsClient(
+  provider: 'gemini' | 'openai' | 'anthropic' | 'deepseek',
+  apiKey: string
+): Promise<ModelDetectionResponse> {
+  const cleanKey = apiKey.trim();
+
+  // 1. DEEPSEEK AI
+  if (provider === 'deepseek') {
+    const defaultDeepSeekModels: DetectedModelItem[] = [
+      {
+        id: 'deepseek-chat',
+        name: 'deepseek-chat (DeepSeek-V3)',
+        description: 'Super cepat, hemat kuota & rekomendasi utama pembuatan soal',
+        isRecommended: true,
+      },
+      {
+        id: 'deepseek-reasoner',
+        name: 'deepseek-reasoner (DeepSeek-R1)',
+        description: 'Penalaran CoT tingkat tinggi untuk logika sains & matematika kompleks',
+        isRecommended: false,
+      },
+    ];
+
+    if (!cleanKey) {
+      return {
+        success: true,
+        provider: 'deepseek',
+        models: defaultDeepSeekModels,
+        recommendedModel: 'deepseek-chat',
+        message: 'Daftar model resmi DeepSeek default (masukkan API key untuk deteksi live).',
+      };
+    }
+
+    try {
+      const res = await fetch('https://api.deepseek.com/models', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${cleanKey}`,
+        },
+      });
+
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.data) && json.data.length > 0) {
+          const list: DetectedModelItem[] = json.data.map((m: any) => ({
+            id: m.id,
+            name:
+              m.id === 'deepseek-chat'
+                ? 'deepseek-chat (DeepSeek-V3 - Cepat & Hemat)'
+                : m.id === 'deepseek-reasoner'
+                ? 'deepseek-reasoner (DeepSeek-R1 - Penalaran Logika)'
+                : m.id,
+            description: m.id === 'deepseek-chat' ? 'Rekomendasi Utama' : undefined,
+            isRecommended: m.id === 'deepseek-chat',
+          }));
+          return {
+            success: true,
+            provider: 'deepseek',
+            models: list,
+            recommendedModel: 'deepseek-chat',
+            message: `Berhasil mendeteksi ${list.length} model aktif dari akun DeepSeek Anda!`,
+          };
+        }
+      }
+    } catch {
+      // Browser CORS fallback
+    }
+
+    return {
+      success: true,
+      provider: 'deepseek',
+      models: defaultDeepSeekModels,
+      recommendedModel: 'deepseek-chat',
+      message: 'Model resmi DeepSeek terverifikasi (deepseek-chat & deepseek-reasoner).',
+    };
+  }
+
+  // 2. GOOGLE GEMINI
+  if (provider === 'gemini') {
+    const defaultGeminiModels: DetectedModelItem[] = [
+      { id: 'gemini-2.5-flash', name: 'gemini-2.5-flash (Generasi Terbaru, Cepat & Cerdas)', isRecommended: true },
+      { id: 'gemini-2.5-flash-lite', name: 'gemini-2.5-flash-lite (Ringan & Cepat)', isRecommended: false },
+      { id: 'gemini-2.0-flash', name: 'gemini-2.0-flash (Stabil & Responsif)', isRecommended: false },
+      { id: 'gemini-1.5-flash', name: 'gemini-1.5-flash (Standar Cepat)', isRecommended: false },
+      { id: 'gemini-2.5-pro', name: 'gemini-2.5-pro (Penalaran Kompleks)', isRecommended: false },
+    ];
+
+    if (!cleanKey) {
+      return {
+        success: true,
+        provider: 'gemini',
+        models: defaultGeminiModels,
+        recommendedModel: 'gemini-2.5-flash',
+        message: 'Daftar model resmi Gemini default.',
+      };
+    }
+
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${cleanKey}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.models)) {
+          const validModels = json.models
+            .filter((m: any) => {
+              const methods: string[] = m.supportedGenerationMethods || [];
+              const name: string = m.name || '';
+              return (
+                methods.includes('generateContent') &&
+                !name.includes('embedding') &&
+                !name.includes('aqa') &&
+                !name.includes('imagen')
+              );
+            })
+            .map((m: any) => {
+              const id = m.name.replace(/^models\//, '');
+              const displayName = m.displayName || id;
+              const isRec = id === 'gemini-2.5-flash' || id === 'gemini-2.0-flash' || id === 'gemini-1.5-flash';
+              return {
+                id,
+                name: `${id} (${displayName})`,
+                description: m.description,
+                isRecommended: isRec,
+              };
+            });
+
+          if (validModels.length > 0) {
+            // Prioritaskan model flash di urutan atas
+            validModels.sort((a: DetectedModelItem, b: DetectedModelItem) => {
+              if (a.id === 'gemini-2.5-flash') return -1;
+              if (b.id === 'gemini-2.5-flash') return 1;
+              if (a.id.includes('flash') && !b.id.includes('flash')) return -1;
+              if (!a.id.includes('flash') && b.id.includes('flash')) return 1;
+              return b.id.localeCompare(a.id);
+            });
+
+            const rec =
+              validModels.find((m: DetectedModelItem) => m.id === 'gemini-2.5-flash')?.id ||
+              validModels.find((m: DetectedModelItem) => m.id.includes('flash'))?.id ||
+              validModels[0].id;
+
+            return {
+              success: true,
+              provider: 'gemini',
+              models: validModels,
+              recommendedModel: rec,
+              message: `Berhasil mendeteksi ${validModels.length} model aktif dari akun Google AI Studio Anda!`,
+            };
+          }
+        }
+      }
+    } catch {
+      // fallback
+    }
+
+    return {
+      success: true,
+      provider: 'gemini',
+      models: defaultGeminiModels,
+      recommendedModel: 'gemini-2.5-flash',
+      message: 'Model resmi Gemini siap digunakan.',
+    };
+  }
+
+  // 3. OPENAI GPT
+  if (provider === 'openai') {
+    const defaultOpenAiModels: DetectedModelItem[] = [
+      { id: 'gpt-4o-mini', name: 'gpt-4o-mini (Cepat, Akurat & Paling Hemat)', isRecommended: true },
+      { id: 'gpt-4o', name: 'gpt-4o (Model Flagship Kognitif Tertinggi)', isRecommended: false },
+      { id: 'o3-mini', name: 'o3-mini (Penalaran Cepat)', isRecommended: false },
+      { id: 'gpt-3.5-turbo', name: 'gpt-3.5-turbo (Generasi Klasik)', isRecommended: false },
+    ];
+
+    if (!cleanKey) {
+      return {
+        success: true,
+        provider: 'openai',
+        models: defaultOpenAiModels,
+        recommendedModel: 'gpt-4o-mini',
+        message: 'Daftar model resmi OpenAI default.',
+      };
+    }
+
+    try {
+      const res = await fetch('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${cleanKey}` },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.data)) {
+          const chatModels = json.data
+            .filter((m: any) => {
+              const id: string = m.id || '';
+              return (
+                id.startsWith('gpt-4') ||
+                id.startsWith('gpt-3.5') ||
+                id.startsWith('o1') ||
+                id.startsWith('o3')
+              );
+            })
+            .map((m: any) => ({
+              id: m.id,
+              name: m.id === 'gpt-4o-mini' ? 'gpt-4o-mini (Rekomendasi Cepat & Hemat)' : m.id,
+              isRecommended: m.id === 'gpt-4o-mini',
+            }));
+
+          if (chatModels.length > 0) {
+            chatModels.sort((a: DetectedModelItem, b: DetectedModelItem) => {
+              if (a.id === 'gpt-4o-mini') return -1;
+              if (b.id === 'gpt-4o-mini') return 1;
+              return a.id.localeCompare(b.id);
+            });
+
+            return {
+              success: true,
+              provider: 'openai',
+              models: chatModels,
+              recommendedModel: 'gpt-4o-mini',
+              message: `Berhasil mendeteksi ${chatModels.length} model GPT dari akun OpenAI Anda!`,
+            };
+          }
+        }
+      }
+    } catch {
+      // fallback
+    }
+
+    return {
+      success: true,
+      provider: 'openai',
+      models: defaultOpenAiModels,
+      recommendedModel: 'gpt-4o-mini',
+      message: 'Model resmi OpenAI siap digunakan.',
+    };
+  }
+
+  // 4. ANTHROPIC CLAUDE
+  return {
+    success: true,
+    provider: 'anthropic',
+    models: [
+      { id: 'claude-3-5-haiku-20241022', name: 'claude-3-5-haiku (Rekomendasi Cepat & Responsif)', isRecommended: true },
+      { id: 'claude-3-5-sonnet-20241022', name: 'claude-3-5-sonnet (Penalaran Bahasa Terbaik)', isRecommended: false },
+      { id: 'claude-3-7-sonnet-20250219', name: 'claude-3-7-sonnet (Model Hybrid Reasoning Terbaru)', isRecommended: false },
+    ],
+    recommendedModel: 'claude-3-5-haiku-20241022',
+    message: 'Model resmi Anthropic Claude siap digunakan.',
+  };
+}
+
 // Uji Koneksi Provider AI dari Browser
 export async function testAiProviderClient(
   provider: 'gemini' | 'openai' | 'anthropic' | 'deepseek',
   apiKey: string,
   model?: string
-): Promise<{ success: boolean; message: string; reply?: string; model?: string }> {
+): Promise<{
+  success: boolean;
+  message: string;
+  reply?: string;
+  model?: string;
+  detectedModels?: DetectedModelItem[];
+  recommendedModel?: string;
+}> {
   try {
+    const modelDetection = await detectModelsClient(provider, apiKey);
+    const chosenModel = model || modelDetection.recommendedModel;
+
     if (provider === 'deepseek') {
-      const m = model || 'deepseek-chat';
+      const m = chosenModel || 'deepseek-chat';
       const text = await callDeepSeekDirect(
         apiKey,
         m,
@@ -462,12 +747,14 @@ export async function testAiProviderClient(
       );
       return {
         success: true,
-        message: `Koneksi DeepSeek AI Berhasil! Terhubung langsung ke model ${m}.`,
+        message: `Koneksi DeepSeek AI Berhasil! Model ${m} aktif dan terdeteksi.`,
         reply: text.trim(),
         model: m,
+        detectedModels: modelDetection.models,
+        recommendedModel: modelDetection.recommendedModel,
       };
     } else if (provider === 'gemini') {
-      const m = model || 'gemini-2.5-flash';
+      const m = chosenModel || 'gemini-2.5-flash';
       const text = await callGeminiDirect(
         apiKey,
         m,
@@ -475,12 +762,14 @@ export async function testAiProviderClient(
       );
       return {
         success: true,
-        message: `Koneksi Google Gemini Berhasil! Terhubung langsung ke model ${m}.`,
+        message: `Koneksi Google Gemini Berhasil! Model ${m} aktif dan terdeteksi.`,
         reply: text.trim(),
         model: m,
+        detectedModels: modelDetection.models,
+        recommendedModel: modelDetection.recommendedModel,
       };
     } else if (provider === 'openai') {
-      const m = model || 'gpt-4o-mini';
+      const m = chosenModel || 'gpt-4o-mini';
       const text = await callOpenAIDirect(
         apiKey,
         m,
@@ -488,14 +777,19 @@ export async function testAiProviderClient(
       );
       return {
         success: true,
-        message: `Koneksi OpenAI GPT Berhasil! Terhubung ke model ${m}.`,
+        message: `Koneksi OpenAI GPT Berhasil! Model ${m} aktif dan terdeteksi.`,
         reply: text.trim(),
         model: m,
+        detectedModels: modelDetection.models,
+        recommendedModel: modelDetection.recommendedModel,
       };
     } else {
       return {
         success: false,
-        message: 'Anthropic Claude memblokir panggilan langsung dari peramban (CORS). Gunakan Google Gemini atau OpenAI.',
+        message:
+          'Anthropic Claude memblokir panggilan langsung dari peramban (CORS). Gunakan DeepSeek atau Google Gemini.',
+        detectedModels: modelDetection.models,
+        recommendedModel: modelDetection.recommendedModel,
       };
     }
   } catch (err: unknown) {

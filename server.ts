@@ -456,6 +456,165 @@ async function startServer() {
     }
   });
 
+  // Deteksi otomatis model resmi dari akun provider AI
+  app.post('/api/detect-models', async (req: Request, res: Response) => {
+    try {
+      const { provider, apiKey } = req.body ?? {};
+      const targetProvider = (provider || 'gemini').toLowerCase().trim();
+
+      if (targetProvider === 'deepseek') {
+        const key = apiKey?.trim() || process.env.DEEPSEEK_API_KEY?.trim();
+        const defaultDeepSeek = [
+          { id: 'deepseek-chat', name: 'deepseek-chat (DeepSeek-V3 - Cepat & Hemat)', isRecommended: true },
+          { id: 'deepseek-reasoner', name: 'deepseek-reasoner (DeepSeek-R1 - Penalaran Logika)', isRecommended: false },
+        ];
+        if (!key) {
+          res.json({ success: true, provider: 'deepseek', models: defaultDeepSeek, recommendedModel: 'deepseek-chat' });
+          return;
+        }
+        try {
+          const resp = await fetch('https://api.deepseek.com/models', {
+            headers: { Authorization: `Bearer ${key}` },
+          });
+          if (resp.ok) {
+            const data = (await resp.json()) as any;
+            if (Array.isArray(data.data) && data.data.length > 0) {
+              const list = data.data.map((m: any) => ({
+                id: m.id,
+                name: m.id === 'deepseek-chat'
+                  ? 'deepseek-chat (DeepSeek-V3 - Cepat & Hemat)'
+                  : m.id === 'deepseek-reasoner'
+                  ? 'deepseek-reasoner (DeepSeek-R1 - Penalaran Logika)'
+                  : m.id,
+                isRecommended: m.id === 'deepseek-chat',
+              }));
+              res.json({
+                success: true,
+                provider: 'deepseek',
+                models: list,
+                recommendedModel: 'deepseek-chat',
+                message: `Berhasil mendeteksi ${list.length} model resmi dari akun DeepSeek!`,
+              });
+              return;
+            }
+          }
+        } catch {
+          // ignore
+        }
+        res.json({ success: true, provider: 'deepseek', models: defaultDeepSeek, recommendedModel: 'deepseek-chat' });
+        return;
+      }
+
+      if (targetProvider === 'openai') {
+        const key = apiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
+        const defaultOpenAi = [
+          { id: 'gpt-4o-mini', name: 'gpt-4o-mini (Cepat, Akurat & Paling Hemat)', isRecommended: true },
+          { id: 'gpt-4o', name: 'gpt-4o (Model Flagship Kognitif Tertinggi)', isRecommended: false },
+          { id: 'o3-mini', name: 'o3-mini (Penalaran Cepat)', isRecommended: false },
+        ];
+        if (!key) {
+          res.json({ success: true, provider: 'openai', models: defaultOpenAi, recommendedModel: 'gpt-4o-mini' });
+          return;
+        }
+        try {
+          const resp = await fetch('https://api.openai.com/v1/models', {
+            headers: { Authorization: `Bearer ${key}` },
+          });
+          if (resp.ok) {
+            const data = (await resp.json()) as any;
+            if (Array.isArray(data.data)) {
+              const chatModels = data.data
+                .filter((m: any) => {
+                  const id = m.id || '';
+                  return id.startsWith('gpt-4') || id.startsWith('gpt-3.5') || id.startsWith('o1') || id.startsWith('o3');
+                })
+                .map((m: any) => ({
+                  id: m.id,
+                  name: m.id === 'gpt-4o-mini' ? 'gpt-4o-mini (Rekomendasi Cepat & Hemat)' : m.id,
+                  isRecommended: m.id === 'gpt-4o-mini',
+                }));
+              if (chatModels.length > 0) {
+                res.json({
+                  success: true,
+                  provider: 'openai',
+                  models: chatModels,
+                  recommendedModel: 'gpt-4o-mini',
+                  message: `Berhasil mendeteksi ${chatModels.length} model GPT dari OpenAI!`,
+                });
+                return;
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+        res.json({ success: true, provider: 'openai', models: defaultOpenAi, recommendedModel: 'gpt-4o-mini' });
+        return;
+      }
+
+      // Default: Gemini
+      const key = apiKey?.trim() || process.env.GEMINI_API_KEY || BACKUP_GEMINI_KEY;
+      const defaultGemini = [
+        { id: 'gemini-2.5-flash', name: 'gemini-2.5-flash (Generasi Terbaru, Cepat & Cerdas)', isRecommended: true },
+        { id: 'gemini-2.5-flash-lite', name: 'gemini-2.5-flash-lite (Ringan & Cepat)', isRecommended: false },
+        { id: 'gemini-2.0-flash', name: 'gemini-2.0-flash (Stabil & Responsif)', isRecommended: false },
+        { id: 'gemini-1.5-flash', name: 'gemini-1.5-flash (Standar Cepat)', isRecommended: false },
+        { id: 'gemini-2.5-pro', name: 'gemini-2.5-pro (Penalaran Kompleks)', isRecommended: false },
+      ];
+
+      if (key) {
+        try {
+          const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+          if (resp.ok) {
+            const data = (await resp.json()) as any;
+            if (Array.isArray(data.models)) {
+              const validModels = data.models
+                .filter((m: any) => {
+                  const methods: string[] = m.supportedGenerationMethods || [];
+                  const name: string = m.name || '';
+                  return (
+                    methods.includes('generateContent') &&
+                    !name.includes('embedding') &&
+                    !name.includes('aqa') &&
+                    !name.includes('imagen')
+                  );
+                })
+                .map((m: any) => {
+                  const id = m.name.replace(/^models\//, '');
+                  const displayName = m.displayName || id;
+                  return {
+                    id,
+                    name: `${id} (${displayName})`,
+                    isRecommended: id === 'gemini-2.5-flash' || id === 'gemini-2.0-flash',
+                  };
+                });
+              if (validModels.length > 0) {
+                const rec =
+                  validModels.find((m: any) => m.id === 'gemini-2.5-flash')?.id ||
+                  validModels.find((m: any) => m.id.includes('flash'))?.id ||
+                  validModels[0].id;
+                res.json({
+                  success: true,
+                  provider: 'gemini',
+                  models: validModels,
+                  recommendedModel: rec,
+                  message: `Berhasil mendeteksi ${validModels.length} model resmi dari Google AI Studio!`,
+                });
+                return;
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      res.json({ success: true, provider: 'gemini', models: defaultGemini, recommendedModel: 'gemini-2.5-flash' });
+    } catch (err: unknown) {
+      res.status(500).json({ success: false, message: (err as Error).message });
+    }
+  });
+
   // Uji koneksi live untuk provider mana pun (Gemini, OpenAI, Anthropic)
   app.post('/api/test-ai-provider', async (req: Request, res: Response) => {
     try {

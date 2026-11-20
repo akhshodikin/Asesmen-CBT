@@ -27,6 +27,9 @@ import {
 import { BLOOM_LEVELS, EIGHT_DIMENSIONS, SUBJECTS } from '../data/schoolData';
 import type { AssessmentConfig, KisiKisiItem } from '../types';
 import {
+  DetectedModelItem,
+  detectModelsClient,
+  detectProviderFromKey,
   getStoredAiConfig,
   saveStoredAiConfig,
   testAiProviderClient,
@@ -89,6 +92,22 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
   const [anthropicKeyInput, setAnthropicKeyInput] = useState('');
   const [anthropicModelInput, setAnthropicModelInput] = useState('claude-3-5-haiku-20241022');
 
+  // Deteksi Model Otomatis State
+  const [detectedModels, setDetectedModels] = useState<{
+    gemini: DetectedModelItem[];
+    deepseek: DetectedModelItem[];
+    openai: DetectedModelItem[];
+    anthropic: DetectedModelItem[];
+  }>({
+    gemini: [],
+    deepseek: [],
+    openai: [],
+    anthropic: [],
+  });
+  const [isDetectingModel, setIsDetectingModel] = useState(false);
+  const [modelDetectStatus, setModelDetectStatus] = useState<{ [key: string]: string }>({});
+  const [smartKeyInput, setSmartKeyInput] = useState('');
+
   const [isSavingKey, setIsSavingKey] = useState(false);
   const [saveKeySuccess, setSaveKeySuccess] = useState(false);
   const [saveKeyError, setSaveKeyError] = useState('');
@@ -102,6 +121,100 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
   } | null>(null);
 
   const [aiConfig, setAiConfig] = useState<any>(null);
+
+  const handleAutoDetectModel = async (
+    targetProv: 'gemini' | 'openai' | 'anthropic' | 'deepseek' = activeProviderTab,
+    customKey?: string
+  ) => {
+    setIsDetectingModel(true);
+    let keyToUse = (customKey !== undefined ? customKey : '').trim();
+    if (!keyToUse) {
+      if (targetProv === 'gemini') keyToUse = geminiKeyInput.trim();
+      else if (targetProv === 'deepseek') keyToUse = deepseekKeyInput.trim();
+      else if (targetProv === 'openai') keyToUse = openaiKeyInput.trim();
+      else if (targetProv === 'anthropic') keyToUse = anthropicKeyInput.trim();
+    }
+
+    let detected: any = null;
+
+    // 1. Coba lewat backend jika ada
+    try {
+      const res = await fetch('/api/detect-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: targetProv, apiKey: keyToUse }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.models)) {
+          detected = data;
+        }
+      }
+    } catch {
+      // offline/firebase hosting
+    }
+
+    // 2. Client-side fallback (Firebase Hosting)
+    if (!detected) {
+      detected = await detectModelsClient(targetProv, keyToUse);
+    }
+
+    if (detected && detected.models && detected.models.length > 0) {
+      setDetectedModels((prev) => ({
+        ...prev,
+        [targetProv]: detected.models,
+      }));
+
+      // Set model terpilih otomatis ke rekomendasi
+      if (targetProv === 'gemini' && detected.recommendedModel) {
+        setGeminiModelInput(detected.recommendedModel);
+      } else if (targetProv === 'deepseek' && detected.recommendedModel) {
+        setDeepseekModelInput(detected.recommendedModel);
+      } else if (targetProv === 'openai' && detected.recommendedModel) {
+        setOpenaiModelInput(detected.recommendedModel);
+      } else if (targetProv === 'anthropic' && detected.recommendedModel) {
+        setAnthropicModelInput(detected.recommendedModel);
+      }
+
+      setModelDetectStatus((prev) => ({
+        ...prev,
+        [targetProv]:
+          detected.message ||
+          `✓ Berhasil mendeteksi ${detected.models.length} model resmi (Terpilih: ${detected.recommendedModel})`,
+      }));
+    }
+
+    setIsDetectingModel(false);
+  };
+
+  const handleSmartKeyPaste = async (pastedKey: string) => {
+    const clean = pastedKey.trim();
+    setSmartKeyInput(clean);
+    if (!clean) return;
+
+    let targetProv: 'gemini' | 'openai' | 'anthropic' | 'deepseek' = activeProviderTab;
+    const detectedProv = detectProviderFromKey(clean);
+    if (detectedProv) {
+      targetProv = detectedProv;
+    } else if (clean.startsWith('sk-')) {
+      targetProv =
+        activeProviderTab === 'deepseek'
+          ? 'deepseek'
+          : activeProviderTab === 'openai'
+          ? 'openai'
+          : 'deepseek';
+    }
+
+    setActiveProviderTab(targetProv);
+    setSelectedMainProvider(targetProv);
+    if (targetProv === 'gemini') setGeminiKeyInput(clean);
+    else if (targetProv === 'deepseek') setDeepseekKeyInput(clean);
+    else if (targetProv === 'openai') setOpenaiKeyInput(clean);
+    else if (targetProv === 'anthropic') setAnthropicKeyInput(clean);
+
+    await handleAutoDetectModel(targetProv, clean);
+  };
 
   const fetchAiConfig = async () => {
     // 1. Ambil dari localStorage terlebih dahulu (Bekerja 100% di browser & Firebase Hosting)
@@ -186,7 +299,22 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
     if (!testedViaBackend) {
       const clientResult = await testAiProviderClient(provider, apiKey, model);
       setTestKeyResult(clientResult);
+      if (clientResult.detectedModels && clientResult.detectedModels.length > 0) {
+        setDetectedModels((prev) => ({
+          ...prev,
+          [provider]: clientResult.detectedModels!,
+        }));
+        if (clientResult.recommendedModel) {
+          if (provider === 'gemini') setGeminiModelInput(clientResult.recommendedModel);
+          else if (provider === 'deepseek') setDeepseekModelInput(clientResult.recommendedModel);
+          else if (provider === 'openai') setOpenaiModelInput(clientResult.recommendedModel);
+          else if (provider === 'anthropic') setAnthropicModelInput(clientResult.recommendedModel);
+        }
+      }
     }
+
+    // Jalankan juga deteksi model
+    await handleAutoDetectModel(provider, apiKey);
 
     setIsTestingKey(false);
   };
@@ -1219,6 +1347,42 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
 
             {/* Body */}
             <div className="p-5 space-y-4 max-h-[68vh] overflow-y-auto">
+              {/* Smart Key & Provider Auto-Detector */}
+              <div className="bg-gradient-to-r from-blue-50 via-purple-50 to-emerald-50 border border-blue-200/90 rounded-xl p-3.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-blue-700" />
+                    <span className="text-xs font-bold text-slate-900">
+                      Deteksi Cerdas API Key &amp; Model Otomatis
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold text-blue-800 bg-blue-100/90 px-2 py-0.5 rounded-full border border-blue-200">
+                    Otomatis
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600">
+                  Tempelkan API Key apa saja (DeepSeek, Gemini, OpenAI, Claude) — sistem langsung mengenali provider, beralih tab, dan otomatis mendeteksi model resmi aktif Anda!
+                </p>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={smartKeyInput}
+                    onChange={(e) => handleSmartKeyPaste(e.target.value)}
+                    placeholder="Tempel API Key di sini (misal: sk-... atau AIzaSy...)"
+                    className="w-full text-xs font-mono p-2.5 pr-24 border border-blue-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-600 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleSmartKeyPaste(smartKeyInput)}
+                    disabled={isDetectingModel || !smartKeyInput.trim()}
+                    className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-[11px] rounded-md transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    {isDetectingModel ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                    <span>Deteksi</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Active Provider Indicator & Toggle */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200">
                 <div>
@@ -1253,30 +1417,66 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
               {activeProviderTab === 'gemini' && (
                 <div className="space-y-3.5">
                   <div className="space-y-1.5">
-                    <label className="block text-xs font-bold text-slate-700">Pilih Model Gemini:</label>
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-700">Pilih Model Gemini:</label>
+                      <button
+                        type="button"
+                        onClick={() => handleAutoDetectModel('gemini')}
+                        disabled={isDetectingModel}
+                        className="text-[11px] font-bold text-purple-700 hover:text-purple-900 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2 py-0.5 rounded-md flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Deteksi otomatis model Gemini dari akun Google Anda"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isDetectingModel ? 'animate-spin' : ''}`} />
+                        <span>{isDetectingModel ? 'Mendeteksi...' : '🔍 Deteksi Model Otomatis'}</span>
+                      </button>
+                    </div>
                     <select
                       value={geminiModelInput}
                       onChange={(e) => setGeminiModelInput(e.target.value)}
                       className="w-full text-xs p-2.5 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-purple-600 focus:outline-none"
                     >
-                      <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Rekomendasi Resmi Google, Super Cepat ~1.8s)</option>
-                      <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Alternatif Cepat &amp; Hemat)</option>
+                      {detectedModels.gemini.length > 0 ? (
+                        detectedModels.gemini.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.isRecommended ? `⭐ ${m.name} [Rekomendasi]` : m.name}
+                          </option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="gemini-2.5-flash">gemini-2.5-flash (Generasi Terbaru, Cepat &amp; Cerdas ⭐)</option>
+                          <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Ringan &amp; Cepat)</option>
+                          <option value="gemini-2.0-flash">gemini-2.0-flash (Stabil &amp; Responsif)</option>
+                          <option value="gemini-1.5-flash">gemini-1.5-flash (Standar Cepat)</option>
+                          <option value="gemini-2.5-pro">gemini-2.5-pro (Penalaran Kompleks)</option>
+                        </>
+                      )}
                     </select>
+                    {modelDetectStatus.gemini && (
+                      <div className="text-[11px] font-medium text-purple-900 bg-purple-50 border border-purple-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5 animate-in fade-in">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                        <span>{modelDetectStatus.gemini}</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
                       <label className="block text-xs font-bold text-slate-700">GEMINI_API_KEY:</label>
                       <span className="text-[11px] font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
-                        Aktif: {aiConfig?.gemini?.keyMasked || 'Tersedia di Server'}
+                        {geminiKeyInput ? 'Tersimpan di Browser' : (aiConfig?.gemini?.keyMasked || 'Tersedia di Server')}
                       </span>
                     </div>
                     <div className="relative">
                       <input
                         type="text"
                         value={geminiKeyInput}
-                        onChange={(e) => setGeminiKeyInput(e.target.value)}
-                        placeholder="Masukkan kunci baru atau biarkan kosong untuk pakai kunci aktif..."
+                        onChange={(e) => {
+                          setGeminiKeyInput(e.target.value);
+                          if (e.target.value.trim().length > 15) {
+                            handleAutoDetectModel('gemini', e.target.value);
+                          }
+                        }}
+                        placeholder="Contoh: AIzaSyxxxxxxxxxxxxxxxx..."
                         className="w-full text-xs font-mono p-2.5 pr-20 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600 bg-white"
                       />
                       <button
@@ -1309,15 +1509,43 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
               {activeProviderTab === 'deepseek' && (
                 <div className="space-y-3.5">
                   <div className="space-y-1.5">
-                    <label className="block text-xs font-bold text-slate-700">Pilih Model DeepSeek:</label>
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-700">Pilih Model DeepSeek:</label>
+                      <button
+                        type="button"
+                        onClick={() => handleAutoDetectModel('deepseek')}
+                        disabled={isDetectingModel}
+                        className="text-[11px] font-bold text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-2 py-0.5 rounded-md flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Deteksi otomatis model DeepSeek dari API"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isDetectingModel ? 'animate-spin' : ''}`} />
+                        <span>{isDetectingModel ? 'Mendeteksi...' : '🔍 Deteksi Model Otomatis'}</span>
+                      </button>
+                    </div>
                     <select
                       value={deepseekModelInput}
                       onChange={(e) => setDeepseekModelInput(e.target.value)}
                       className="w-full text-xs p-2.5 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-600 focus:outline-none"
                     >
-                      <option value="deepseek-chat">deepseek-chat (DeepSeek-V3, Cepat, Pintar &amp; Paling Hemat)</option>
-                      <option value="deepseek-reasoner">deepseek-reasoner (DeepSeek-R1, Penalaran Logika &amp; Sains Mendalam)</option>
+                      {detectedModels.deepseek.length > 0 ? (
+                        detectedModels.deepseek.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.isRecommended ? `⭐ ${m.name} [Rekomendasi]` : m.name}
+                          </option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="deepseek-chat">deepseek-chat (DeepSeek-V3, Cepat, Pintar &amp; Paling Hemat ⭐)</option>
+                          <option value="deepseek-reasoner">deepseek-reasoner (DeepSeek-R1, Penalaran Logika &amp; Sains Mendalam)</option>
+                        </>
+                      )}
                     </select>
+                    {modelDetectStatus.deepseek && (
+                      <div className="text-[11px] font-medium text-blue-900 bg-blue-50 border border-blue-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5 animate-in fade-in">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                        <span>{modelDetectStatus.deepseek}</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-1.5">
@@ -1331,7 +1559,12 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
                       <input
                         type="text"
                         value={deepseekKeyInput}
-                        onChange={(e) => setDeepseekKeyInput(e.target.value)}
+                        onChange={(e) => {
+                          setDeepseekKeyInput(e.target.value);
+                          if (e.target.value.trim().length > 15) {
+                            handleAutoDetectModel('deepseek', e.target.value);
+                          }
+                        }}
                         placeholder="Contoh: sk-xxxxxxxxxxxxxxxx..."
                         className="w-full text-xs font-mono p-2.5 pr-20 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 bg-white"
                       />
@@ -1365,29 +1598,63 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
               {activeProviderTab === 'openai' && (
                 <div className="space-y-3.5">
                   <div className="space-y-1.5">
-                    <label className="block text-xs font-bold text-slate-700">Pilih Model OpenAI GPT:</label>
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-700">Pilih Model OpenAI GPT:</label>
+                      <button
+                        type="button"
+                        onClick={() => handleAutoDetectModel('openai')}
+                        disabled={isDetectingModel}
+                        className="text-[11px] font-bold text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-md flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Deteksi otomatis model GPT dari akun OpenAI Anda"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isDetectingModel ? 'animate-spin' : ''}`} />
+                        <span>{isDetectingModel ? 'Mendeteksi...' : '🔍 Deteksi Model Otomatis'}</span>
+                      </button>
+                    </div>
                     <select
                       value={openaiModelInput}
                       onChange={(e) => setOpenaiModelInput(e.target.value)}
                       className="w-full text-xs p-2.5 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-emerald-600 focus:outline-none"
                     >
-                      <option value="gpt-4o-mini">gpt-4o-mini (Rekomendasi Cepat, Akurat &amp; Hemat Biaya)</option>
-                      <option value="gpt-4o">gpt-4o (Model Flagship OpenAI, Kemampuan Kognitif Tertinggi)</option>
+                      {detectedModels.openai.length > 0 ? (
+                        detectedModels.openai.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.isRecommended ? `⭐ ${m.name} [Rekomendasi]` : m.name}
+                          </option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="gpt-4o-mini">gpt-4o-mini (Rekomendasi Cepat, Akurat &amp; Hemat Biaya ⭐)</option>
+                          <option value="gpt-4o">gpt-4o (Model Flagship OpenAI, Kemampuan Kognitif Tertinggi)</option>
+                          <option value="o3-mini">o3-mini (Penalaran Cepat)</option>
+                        </>
+                      )}
                     </select>
+                    {modelDetectStatus.openai && (
+                      <div className="text-[11px] font-medium text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5 animate-in fade-in">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>{modelDetectStatus.openai}</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
                       <label className="block text-xs font-bold text-slate-700">OPENAI_API_KEY:</label>
                       <span className="text-[11px] font-mono text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                        {aiConfig?.openai?.keyMasked ? `Aktif: ${aiConfig.openai.keyMasked}` : 'Belum Ada Kunci'}
+                        {openaiKeyInput ? 'Tersimpan di Browser' : (aiConfig?.openai?.keyMasked ? `Aktif: ${aiConfig.openai.keyMasked}` : 'Belum Ada Kunci')}
                       </span>
                     </div>
                     <div className="relative">
                       <input
                         type="text"
                         value={openaiKeyInput}
-                        onChange={(e) => setOpenaiKeyInput(e.target.value)}
+                        onChange={(e) => {
+                          setOpenaiKeyInput(e.target.value);
+                          if (e.target.value.trim().length > 15) {
+                            handleAutoDetectModel('openai', e.target.value);
+                          }
+                        }}
                         placeholder="Contoh: sk-proj-xxxxxxxx..."
                         className="w-full text-xs font-mono p-2.5 pr-20 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-600 bg-white"
                       />
@@ -1417,33 +1684,67 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
                 </div>
               )}
 
-              {/* TAB 3: ANTHROPIC CLAUDE */}
+              {/* TAB 4: ANTHROPIC CLAUDE */}
               {activeProviderTab === 'anthropic' && (
                 <div className="space-y-3.5">
                   <div className="space-y-1.5">
-                    <label className="block text-xs font-bold text-slate-700">Pilih Model Anthropic Claude:</label>
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-700">Pilih Model Anthropic Claude:</label>
+                      <button
+                        type="button"
+                        onClick={() => handleAutoDetectModel('anthropic')}
+                        disabled={isDetectingModel}
+                        className="text-[11px] font-bold text-amber-800 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-md flex items-center gap-1 cursor-pointer transition-colors"
+                        title="Deteksi model Claude"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isDetectingModel ? 'animate-spin' : ''}`} />
+                        <span>{isDetectingModel ? 'Mendeteksi...' : '🔍 Deteksi Model Otomatis'}</span>
+                      </button>
+                    </div>
                     <select
                       value={anthropicModelInput}
                       onChange={(e) => setAnthropicModelInput(e.target.value)}
                       className="w-full text-xs p-2.5 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-amber-600 focus:outline-none"
                     >
-                      <option value="claude-3-5-haiku-20241022">claude-3-5-haiku (Rekomendasi Cepat &amp; Responsif)</option>
-                      <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet (Model Penalaran Bahasa Terbaik)</option>
+                      {detectedModels.anthropic.length > 0 ? (
+                        detectedModels.anthropic.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.isRecommended ? `⭐ ${m.name} [Rekomendasi]` : m.name}
+                          </option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="claude-3-5-haiku-20241022">claude-3-5-haiku (Rekomendasi Cepat &amp; Responsif ⭐)</option>
+                          <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet (Model Penalaran Bahasa Terbaik)</option>
+                          <option value="claude-3-7-sonnet-20250219">claude-3-7-sonnet (Model Hybrid Reasoning Terbaru)</option>
+                        </>
+                      )}
                     </select>
+                    {modelDetectStatus.anthropic && (
+                      <div className="text-[11px] font-medium text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5 animate-in fade-in">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        <span>{modelDetectStatus.anthropic}</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
                       <label className="block text-xs font-bold text-slate-700">ANTHROPIC_API_KEY:</label>
                       <span className="text-[11px] font-mono text-amber-900 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                        {aiConfig?.anthropic?.keyMasked ? `Aktif: ${aiConfig.anthropic.keyMasked}` : 'Belum Ada Kunci'}
+                        {anthropicKeyInput ? 'Tersimpan di Browser' : (aiConfig?.anthropic?.keyMasked ? `Aktif: ${aiConfig.anthropic.keyMasked}` : 'Belum Ada Kunci')}
                       </span>
                     </div>
                     <div className="relative">
                       <input
                         type="text"
                         value={anthropicKeyInput}
-                        onChange={(e) => setAnthropicKeyInput(e.target.value)}
+                        onChange={(e) => {
+                          setAnthropicKeyInput(e.target.value);
+                          if (e.target.value.trim().length > 15) {
+                            handleAutoDetectModel('anthropic', e.target.value);
+                          }
+                        }}
                         placeholder="Contoh: sk-ant-api03-xxxxxxxx..."
                         className="w-full text-xs font-mono p-2.5 pr-20 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-600 bg-white"
                       />
