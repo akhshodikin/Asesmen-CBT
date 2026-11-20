@@ -10,6 +10,9 @@ import {
   Edit3,
   ExternalLink,
   FileCheck2,
+  FileText,
+  FileType,
+  FileUp,
   Layers,
   Monitor,
   Package,
@@ -18,6 +21,7 @@ import {
   Shuffle,
   Sparkles,
   Trash2,
+  Upload,
   Wand2,
   X,
 } from 'lucide-react';
@@ -51,6 +55,14 @@ import {
   buildGoogleAppsScript,
   downloadTextFile,
 } from '../utils/exportHelpers';
+import {
+  autoParseQuestions,
+  convertToBankQuestions,
+  downloadQuestionTemplateCSV,
+  downloadQuestionTemplateJSON,
+  downloadQuestionTemplateTXT,
+  type ParseResult,
+} from '../utils/questionImportExport';
 
 interface TabPaketBankCBTProps {
   config: AssessmentConfig;
@@ -208,6 +220,17 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
     kesulitan: 'Sedang',
     dimensi: 'Penalaran Kritis',
   });
+
+  // Upload Soal State
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [uploadInputTab, setUploadInputTab] = useState<'file' | 'paste' | 'template'>('file');
+  const [uploadFileName, setUploadFileName] = useState('');
+  const [uploadRawText, setUploadRawText] = useState('');
+  const [uploadMapel, setUploadMapel] = useState(config.mapel);
+  const [uploadKelas, setUploadKelas] = useState(config.kelas);
+  const [uploadNamaPaket, setUploadNamaPaket] = useState('');
+  const [uploadParseResult, setUploadParseResult] = useState<ParseResult | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
 
   const notify = (msg: string) => {
     setErrorMsg('');
@@ -779,6 +802,194 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
     setSelectedBankIds([]);
   };
 
+  // --- UPLOAD & GOOGLE FORM HANDLERS ---
+  const handleFileSelect = (file: File) => {
+    if (!file) return;
+    setUploadFileName(file.name);
+    if (!uploadNamaPaket) {
+      const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+      setUploadNamaPaket(`Paket Upload: ${cleanName}`);
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = String(e.target?.result || '');
+      setUploadRawText(text);
+      const parsed = autoParseQuestions(text);
+      setUploadParseResult(parsed);
+      if (parsed.error) {
+        setErrorMsg(parsed.error);
+      } else {
+        notify(`File ${file.name} berhasil dibaca: ${parsed.totalDetected} butir soal terdeteksi.`);
+      }
+    };
+    reader.onerror = () => {
+      setErrorMsg('Gagal membaca file. Pastikan file berupa teks, JSON, atau CSV yang valid.');
+    };
+    reader.readAsText(file);
+  };
+
+  const handleRawTextChange = (text: string) => {
+    setUploadRawText(text);
+    if (text.trim().length > 10) {
+      const parsed = autoParseQuestions(text);
+      setUploadParseResult(parsed);
+    } else {
+      setUploadParseResult(null);
+    }
+  };
+
+  const handleSaveUploadQuestions = (andMakeGForm = false) => {
+    if (!uploadParseResult || uploadParseResult.questions.length === 0) {
+      setErrorMsg('Belum ada butir soal yang valid untuk disimpan.');
+      return;
+    }
+
+    const targetMapel = uploadMapel || config.mapel;
+    const targetKelas = uploadKelas || config.kelas;
+    const now = new Date().toISOString();
+
+    // 1. Simpan ke Bank Soal
+    const newBankItems = convertToBankQuestions(
+      uploadParseResult.questions,
+      targetMapel,
+      targetKelas,
+      'Upload File'
+    );
+    setBankQuestions((prev) => [...newBankItems, ...prev]);
+
+    // 2. Buat Paket Ujian
+    const pkgName =
+      uploadNamaPaket.trim() ||
+      `Paket Upload ${targetMapel.split('(')[0].trim()} ${targetKelas}`;
+    const newPkg: ExamPackage = {
+      id: `pkg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      kodePaket: `PKT-${Date.now().toString().slice(-4)}`,
+      namaPaket: pkgName,
+      mapel: targetMapel,
+      kelas: targetKelas,
+      fase: resolveFase(targetKelas),
+      jenisAsesmen: config.jenisAsesmen || 'Sumatif Akhir Semester',
+      durasiMenit: Number(config.durasiMenit) || 60,
+      tokenCBT: generateRandomToken('CBT'),
+      kktp: 75,
+      acakSoal: false,
+      acakOpsi: false,
+      status: 'Aktif',
+      questions: uploadParseResult.questions.map((q, i) => ({
+        ...q,
+        nomor: i + 1,
+        materi: q.materi || targetMapel,
+      })),
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setExamPackages((prev) => [newPkg, ...prev]);
+    setIsUploadModalOpen(false);
+
+    if (andMakeGForm) {
+      // Langsung buka modal Google Form!
+      setGformModalPkg(newPkg);
+      notify(
+        `🎉 ${uploadParseResult.questions.length} soal berhasil diunggah! Generator Google Form siap dibuat.`
+      );
+    } else {
+      notify(
+        `Berhasil mengunggah ${uploadParseResult.questions.length} butir soal ke Bank Soal & Daftar Paket "${newPkg.namaPaket}".`
+      );
+    }
+  };
+
+  const handleBulkConvertToGoogleForm = () => {
+    if (selectedBankIds.length === 0) return;
+    const picked = bankQuestions.filter((b) => selectedBankIds.includes(b.id));
+    if (picked.length === 0) return;
+
+    const sampleMapel = picked[0].mapel || config.mapel;
+    const sampleKelas = picked[0].kelas || config.kelas;
+    const now = new Date().toISOString();
+
+    const tempPkg: ExamPackage = {
+      id: `temp-gform-${Date.now()}`,
+      kodePaket: `GFORM-${Date.now().toString().slice(-4)}`,
+      namaPaket: `Paket Soal Pilihan Bank (${picked.length} Butir Soal)`,
+      mapel: sampleMapel,
+      kelas: sampleKelas,
+      fase: resolveFase(sampleKelas),
+      jenisAsesmen: config.jenisAsesmen || 'Sumatif Akhir Semester',
+      durasiMenit: Number(config.durasiMenit) || 60,
+      tokenCBT: generateRandomToken('CBT'),
+      kktp: 75,
+      acakSoal: false,
+      acakOpsi: false,
+      status: 'Aktif',
+      questions: picked.map((b, i) => ({
+        nomor: i + 1,
+        bentuk: b.bentuk,
+        stimulus: b.stimulus,
+        pertanyaan: b.pertanyaan,
+        opsi: [...(b.opsi || [])],
+        kunci: b.kunci,
+        pembahasan: b.pembahasan,
+        skor: Number(b.skor) || 10,
+        materi: b.materi,
+        indikator: b.indikator,
+        bloom: b.bloom,
+        kesulitan: b.kesulitan,
+        dimensi: b.dimensi,
+        gambarUrl: b.gambarUrl,
+        gambarDeskripsi: b.gambarDeskripsi,
+      })),
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setGformModalPkg(tempPkg);
+  };
+
+  const handleSingleQuestionToGoogleForm = (bq: BankQuestionItem) => {
+    const now = new Date().toISOString();
+    const tempPkg: ExamPackage = {
+      id: `temp-gform-${Date.now()}`,
+      kodePaket: `GFORM-${Date.now().toString().slice(-4)}`,
+      namaPaket: `Soal #${bq.nomor}: ${bq.materi || bq.mapel}`,
+      mapel: bq.mapel || config.mapel,
+      kelas: bq.kelas || config.kelas,
+      fase: resolveFase(bq.kelas || config.kelas),
+      jenisAsesmen: config.jenisAsesmen || 'Sumatif Akhir Semester',
+      durasiMenit: Number(config.durasiMenit) || 60,
+      tokenCBT: generateRandomToken('CBT'),
+      kktp: 75,
+      acakSoal: false,
+      acakOpsi: false,
+      status: 'Aktif',
+      questions: [
+        {
+          nomor: 1,
+          bentuk: bq.bentuk,
+          stimulus: bq.stimulus,
+          pertanyaan: bq.pertanyaan,
+          opsi: [...(bq.opsi || [])],
+          kunci: bq.kunci,
+          pembahasan: bq.pembahasan,
+          skor: Number(bq.skor) || 10,
+          materi: bq.materi,
+          indikator: bq.indikator,
+          bloom: bq.bloom,
+          kesulitan: bq.kesulitan,
+          dimensi: bq.dimensi,
+          gambarUrl: bq.gambarUrl,
+          gambarDeskripsi: bq.gambarDeskripsi,
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setGformModalPkg(tempPkg);
+  };
+
   return (
     <div className="space-y-6 no-print">
       {/* Header & Sub-Navigation */}
@@ -800,6 +1011,23 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setUploadMapel(config.mapel);
+                setUploadKelas(config.kelas);
+                setUploadNamaPaket(`Paket Upload ${config.mapel.split('(')[0].trim()} ${config.kelas}`);
+                setUploadParseResult(null);
+                setUploadRawText('');
+                setUploadFileName('');
+                setIsUploadModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-800 hover:to-indigo-800 text-white text-xs font-bold px-3.5 py-2 rounded-lg transition-all whitespace-nowrap cursor-pointer shadow-sm"
+              title="Unggah soal dari file JSON, format Aiken TXT, atau CSV Excel & konversi ke Google Form"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>Upload &amp; Konversi ke GForm</span>
+            </button>
             <button
               type="button"
               onClick={handleSaveCurrentAsPackage}
@@ -1859,6 +2087,23 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => {
+                    setUploadMapel(config.mapel);
+                    setUploadKelas(config.kelas);
+                    setUploadNamaPaket(`Paket Upload ${config.mapel.split('(')[0].trim()} ${config.kelas}`);
+                    setUploadParseResult(null);
+                    setUploadRawText('');
+                    setUploadFileName('');
+                    setIsUploadModalOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold px-3.5 py-2 rounded-lg cursor-pointer whitespace-nowrap shadow-xs transition-colors"
+                  title="Upload naskah soal dari file JSON, format Aiken TXT, atau CSV Excel & konversi langsung ke Google Form"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Upload Soal &amp; Konversi ke Google Form</span>
+                </button>
+                <button
+                  type="button"
                   onClick={openCreateBankForm}
                   className="flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold px-3.5 py-2 rounded-lg cursor-pointer whitespace-nowrap"
                 >
@@ -1876,14 +2121,24 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
               </div>
 
               {selectedBankIds.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg text-xs">
-                  <span className="font-bold text-emerald-900">
+                <div className="flex flex-wrap items-center gap-2 bg-purple-50 border border-purple-200 px-3 py-1.5 rounded-lg text-xs">
+                  <span className="font-bold text-purple-950">
                     {selectedBankIds.length} Soal Dipilih →
                   </span>
+                  <button
+                    type="button"
+                    onClick={handleBulkConvertToGoogleForm}
+                    className="flex items-center gap-1.5 bg-purple-700 hover:bg-purple-800 text-white font-bold px-3 py-1 rounded cursor-pointer whitespace-nowrap shadow-xs transition-colors"
+                    title="Konversi butir soal yang dicentang langsung ke Google Form Kuis & Rekap Sheets"
+                  >
+                    <GoogleFormsLogo className="w-3.5 h-3.5" />
+                    <span>Konversi ke Google Form ({selectedBankIds.length})</span>
+                  </button>
+                  <span className="text-purple-300">|</span>
                   <select
                     value={targetBulkPkgId}
                     onChange={(e) => setTargetBulkPkgId(e.target.value)}
-                    className="border border-emerald-300 rounded px-2 py-1 bg-white text-xs"
+                    className="border border-purple-300 rounded px-2 py-1 bg-white text-xs"
                   >
                     {examPackages.map((p) => (
                       <option key={p.id} value={p.id}>
@@ -2353,6 +2608,15 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
                             <div className="flex flex-wrap items-center justify-center gap-1.5">
                               <button
                                 type="button"
+                                onClick={() => handleSingleQuestionToGoogleForm(bq)}
+                                className="px-2 py-1 rounded border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-900 font-semibold cursor-pointer flex items-center gap-1 text-xs transition-colors"
+                                title="Buat Google Form Kuis langsung dari butir soal ini"
+                              >
+                                <GoogleFormsLogo className="w-3 h-3" />
+                                <span>GForm</span>
+                              </button>
+                              <button
+                                type="button"
                                 onClick={() => openEditBankForm(bq)}
                                 className="px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
                               >
@@ -2613,6 +2877,405 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
               >
                 Tutup
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================
+          MODAL UPLOAD SOAL & KONVERSI LANGSUNG KE GOOGLE FORM
+          ============================================================ */}
+      {isUploadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full max-h-[92vh] flex flex-col my-auto overflow-hidden animate-in fade-in duration-200">
+            {/* Header Modal */}
+            <div className="p-5 border-b border-slate-200 bg-gradient-to-r from-purple-50 via-indigo-50 to-white flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-gradient-to-br from-purple-700 to-indigo-700 text-white rounded-xl shadow-xs">
+                  <Upload className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-purple-900 uppercase tracking-wide bg-purple-100 px-2 py-0.5 rounded-full">
+                      Import &amp; Converter
+                    </span>
+                    <span className="text-slate-400">·</span>
+                    <span className="text-xs font-semibold text-slate-600">
+                      Bank Soal &amp; Google Forms
+                    </span>
+                  </div>
+                  <h3 className="text-base font-bold text-slate-900 mt-0.5">
+                    Upload Soal &amp; Konversi Otomatis ke Google Form
+                  </h3>
+                  <p className="text-xs text-slate-600">
+                    Mendukung file <strong>JSON</strong>, naskah teks <strong>Format Aiken / Word</strong>, dan spreadsheet <strong>CSV Excel</strong>.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsUploadModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors"
+                title="Tutup Modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Body Modal */}
+            <div className="p-6 overflow-y-auto space-y-5">
+              {/* Target Mapel, Kelas & Nama Paket */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Mata Pelajaran Sasaran</label>
+                  <select
+                    value={uploadMapel}
+                    onChange={(e) => setUploadMapel(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white font-medium"
+                  >
+                    {SUBJECTS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Tingkat Kelas</label>
+                  <select
+                    value={uploadKelas}
+                    onChange={(e) => setUploadKelas(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white font-medium"
+                  >
+                    {KELAS_LIST.map((k) => (
+                      <option key={k} value={k}>
+                        {k} ({resolveFase(k)})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Nama Paket Ujian / File</label>
+                  <input
+                    type="text"
+                    value={uploadNamaPaket}
+                    onChange={(e) => setUploadNamaPaket(e.target.value)}
+                    placeholder="Contoh: Asesmen Sumatif Harian Bab 3"
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white font-medium"
+                  />
+                </div>
+              </div>
+
+              {/* Mode Tabs */}
+              <div className="flex border-b border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setUploadInputTab('file')}
+                  className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+                    uploadInputTab === 'file'
+                      ? 'border-purple-700 text-purple-900 bg-purple-50/50'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <FileUp className="w-4 h-4" />
+                  <span>1. Unggah File (.json, .txt, .csv)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUploadInputTab('paste')}
+                  className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+                    uploadInputTab === 'paste'
+                      ? 'border-purple-700 text-purple-900 bg-purple-50/50'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <FileText className="w-4 h-4" />
+                  <span>2. Tempel Teks Soal (Word / WhatsApp)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUploadInputTab('template')}
+                  className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
+                    uploadInputTab === 'template'
+                      ? 'border-purple-700 text-purple-900 bg-purple-50/50'
+                      : 'border-transparent text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Download className="w-4 h-4" />
+                  <span>3. Unduh Template Format Soal</span>
+                </button>
+              </div>
+
+              {/* Tab Content: File Upload */}
+              {uploadInputTab === 'file' && (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDraggingFile(true);
+                  }}
+                  onDragLeave={() => setIsDraggingFile(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setIsDraggingFile(false);
+                    const files = e.dataTransfer.files;
+                    if (files && files.length > 0) {
+                      handleFileSelect(files[0]);
+                    }
+                  }}
+                  className={`border-2 border-dashed rounded-2xl p-8 text-center transition-all ${
+                    isDraggingFile
+                      ? 'border-purple-600 bg-purple-50'
+                      : 'border-slate-300 hover:border-purple-400 bg-slate-50/50'
+                  }`}
+                >
+                  <input
+                    type="file"
+                    id="bank-file-upload-input"
+                    accept=".json,.txt,.csv,.tsv"
+                    onChange={(e) => {
+                      const files = e.target.files;
+                      if (files && files.length > 0) {
+                        handleFileSelect(files[0]);
+                      }
+                    }}
+                    className="hidden"
+                  />
+                  <div className="flex flex-col items-center justify-center space-y-3">
+                    <div className="p-4 bg-purple-100 text-purple-800 rounded-full">
+                      <Upload className="w-8 h-8" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">
+                        {uploadFileName ? `File Terpilih: ${uploadFileName}` : 'Seret & Letakkan file soal Anda di sini'}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Mendukung file: <strong>.JSON</strong> (Bank Soal), <strong>.TXT</strong> (Format Aiken / Naskah), dan <strong>.CSV</strong> (Excel).
+                      </p>
+                    </div>
+                    <label
+                      htmlFor="bank-file-upload-input"
+                      className="inline-flex items-center gap-2 bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold px-4 py-2 rounded-lg cursor-pointer transition-colors shadow-xs"
+                    >
+                      <FileUp className="w-4 h-4" />
+                      <span>{uploadFileName ? 'Ganti File' : 'Pilih File dari Komputer'}</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab Content: Paste Text */}
+              {uploadInputTab === 'paste' && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-700">
+                      Tempelkan Teks Naskah Soal Anda di Bawah Ini:
+                    </label>
+                    <span className="text-[11px] text-slate-500">
+                      Parser otomatis mendeteksi nomor, opsi A/B/C/D, kunci, dan pembahasan.
+                    </span>
+                  </div>
+                  <textarea
+                    rows={8}
+                    value={uploadRawText}
+                    onChange={(e) => handleRawTextChange(e.target.value)}
+                    placeholder={`Contoh Format Aiken:
+1. Sila Pancasila yang paling mencerminkan toleransi beragama adalah...
+A. Ketuhanan Yang Maha Esa
+B. Kemanusiaan yang Adil dan Beradab
+C. Persatuan Indonesia
+D. Keadilan Sosial
+KUNCI: A
+PEMBAHASAN: Nilai toleransi beragama berasal dari Sila Pertama.
+SKOR: 10
+
+2. Ibukota Provinsi Jawa Timur adalah...
+A. Malang
+B. Surabaya
+C. Pasuruan
+D. Probolinggo
+KUNCI: B`}
+                    className="w-full border border-slate-300 rounded-xl p-3.5 text-xs font-mono leading-relaxed bg-white focus:ring-2 focus:ring-purple-600 focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {/* Tab Content: Download Templates */}
+              {uploadInputTab === 'template' && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Template JSON */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                    <div>
+                      <div className="p-2 bg-emerald-100 text-emerald-800 rounded-lg w-fit mb-2">
+                        <FileType className="w-5 h-5" />
+                      </div>
+                      <h4 className="font-bold text-xs text-slate-900">1. Template JSON (Lengkap)</h4>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        Format standar untuk cadangan Bank Soal, memuat atribut stimulus, tipe soal, materi, bloom, dan kunci.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={downloadQuestionTemplateJSON}
+                      className="w-full flex items-center justify-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold py-2 rounded-lg cursor-pointer transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Unduh Template .JSON</span>
+                    </button>
+                  </div>
+
+                  {/* Template Aiken TXT */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                    <div>
+                      <div className="p-2 bg-purple-100 text-purple-800 rounded-lg w-fit mb-2">
+                        <FileText className="w-5 h-5" />
+                      </div>
+                      <h4 className="font-bold text-xs text-slate-900">2. Template Format Aiken (.txt)</h4>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        Paling mudah digunakan! Format teks sederhana siap diketik atau dicopy dari Microsoft Word &amp; Notepad.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={downloadQuestionTemplateTXT}
+                      className="w-full flex items-center justify-center gap-1.5 bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold py-2 rounded-lg cursor-pointer transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Unduh Template .TXT</span>
+                    </button>
+                  </div>
+
+                  {/* Template CSV Excel */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                    <div>
+                      <div className="p-2 bg-blue-100 text-blue-800 rounded-lg w-fit mb-2">
+                        <GoogleSheetsLogo className="w-5 h-5" />
+                      </div>
+                      <h4 className="font-bold text-xs text-slate-900">3. Template Excel (.csv)</h4>
+                      <p className="text-[11px] text-slate-600 mt-1">
+                        Format tabel spreadsheet siap diisi di Microsoft Excel dengan kolom Soal, Opsi A-D, Kunci, dan Skor.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={downloadQuestionTemplateCSV}
+                      className="w-full flex items-center justify-center gap-1.5 bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold py-2 rounded-lg cursor-pointer transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Unduh Template .CSV</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Live Preview Hasil Parsing */}
+              {uploadParseResult && (
+                <div className="space-y-3 pt-2 border-t border-slate-200">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-800">
+                        Hasil Analisis Soal:
+                      </span>
+                      <span className="bg-purple-100 text-purple-900 text-xs font-bold px-2.5 py-0.5 rounded-full">
+                        Format: {uploadParseResult.detectedFormat}
+                      </span>
+                      <span className="bg-emerald-100 text-emerald-900 text-xs font-bold px-2.5 py-0.5 rounded-full">
+                        {uploadParseResult.totalDetected} Butir Soal Siap Diimpor
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-500">
+                      Sasaran: {uploadMapel} · {uploadKelas}
+                    </span>
+                  </div>
+
+                  {uploadParseResult.warnings && uploadParseResult.warnings.length > 0 && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 space-y-1">
+                      <span className="font-bold block">Catatan Parser:</span>
+                      {uploadParseResult.warnings.map((w, idx) => (
+                        <p key={idx}>• {w}</p>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* List preview accordion/cards */}
+                  <div className="max-h-60 overflow-y-auto space-y-2 border border-slate-200 rounded-xl p-3 bg-slate-50/50">
+                    {uploadParseResult.questions.map((q, idx) => (
+                      <div
+                        key={idx}
+                        className="bg-white p-3 rounded-lg border border-slate-200 shadow-2xs space-y-1.5 text-xs"
+                      >
+                        <div className="flex items-center justify-between text-[11px] text-slate-500 border-b border-slate-100 pb-1">
+                          <span className="font-bold text-purple-900">
+                            Butir #{idx + 1} · {q.bentuk}
+                          </span>
+                          <span className="font-mono text-emerald-800 font-bold">
+                            Kunci: {q.kunci} · Skor {q.skor}
+                          </span>
+                        </div>
+                        {q.stimulus && (
+                          <p className="text-slate-500 italic bg-slate-50 p-1.5 rounded text-[11px]">
+                            {q.stimulus}
+                          </p>
+                        )}
+                        <p className="font-medium text-slate-900">{q.pertanyaan}</p>
+                        {q.opsi && q.opsi.length > 0 && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-[11px] text-slate-600 pt-1">
+                            {q.opsi.map((op, oIdx) => (
+                              <span
+                                key={oIdx}
+                                className={`px-2 py-0.5 rounded ${
+                                  q.kunci.toUpperCase().includes(op.slice(0, 1).toUpperCase())
+                                    ? 'bg-emerald-50 text-emerald-900 font-semibold'
+                                    : 'bg-slate-50 text-slate-700'
+                                }`}
+                              >
+                                {op}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {q.pembahasan && (
+                          <p className="text-[11px] text-slate-500 bg-purple-50/50 p-1.5 rounded">
+                            <strong className="text-purple-900">Pembahasan:</strong> {q.pembahasan}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer Modal Actions */}
+            <div className="p-4 border-t border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setIsUploadModalOpen(false)}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+              >
+                Batal
+              </button>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={!uploadParseResult || uploadParseResult.questions.length === 0}
+                  onClick={() => handleSaveUploadQuestions(false)}
+                  className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold px-4 py-2 rounded-lg cursor-pointer transition-colors shadow-xs"
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  <span>Simpan ke Bank Soal</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!uploadParseResult || uploadParseResult.questions.length === 0}
+                  onClick={() => handleSaveUploadQuestions(true)}
+                  className="flex items-center gap-2 bg-gradient-to-r from-purple-700 via-indigo-700 to-purple-800 hover:from-purple-800 hover:to-indigo-900 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold px-5 py-2 rounded-lg cursor-pointer transition-all shadow-md"
+                >
+                  <GoogleFormsLogo className="w-4 h-4" />
+                  <span>⚡ Simpan &amp; Langsung Konversi ke Google Form</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
