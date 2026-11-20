@@ -1,7 +1,7 @@
 import type { AssessmentConfig, KisiKisiItem, QuestionItem } from '../types';
 
 export interface ClientAiConfig {
-  activeProvider: 'gemini' | 'openai' | 'anthropic';
+  activeProvider: 'gemini' | 'openai' | 'anthropic' | 'deepseek';
   gemini: {
     apiKey: string;
     model: string;
@@ -11,6 +11,10 @@ export interface ClientAiConfig {
     model: string;
   };
   anthropic: {
+    apiKey: string;
+    model: string;
+  };
+  deepseek: {
     apiKey: string;
     model: string;
   };
@@ -34,6 +38,10 @@ export function getStoredAiConfig(): ClientAiConfig {
       apiKey: (import.meta as any).env?.VITE_ANTHROPIC_API_KEY || '',
       model: 'claude-3-5-haiku-20241022',
     },
+    deepseek: {
+      apiKey: (import.meta as any).env?.VITE_DEEPSEEK_API_KEY || '',
+      model: 'deepseek-chat',
+    },
   };
 
   try {
@@ -54,6 +62,10 @@ export function getStoredAiConfig(): ClientAiConfig {
       anthropic: {
         apiKey: parsed.anthropic?.apiKey || defaultConfig.anthropic.apiKey,
         model: parsed.anthropic?.model || defaultConfig.anthropic.model,
+      },
+      deepseek: {
+        apiKey: parsed.deepseek?.apiKey || defaultConfig.deepseek.apiKey,
+        model: parsed.deepseek?.model || defaultConfig.deepseek.model,
       },
     };
   } catch {
@@ -77,6 +89,10 @@ export function saveStoredAiConfig(updates: Partial<ClientAiConfig>): ClientAiCo
     anthropic: {
       ...current.anthropic,
       ...(updates.anthropic || {}),
+    },
+    deepseek: {
+      ...current.deepseek,
+      ...(updates.deepseek || {}),
     },
   };
 
@@ -232,6 +248,57 @@ async function callOpenAIDirect(
   return data.choices?.[0]?.message?.content || '';
 }
 
+// Panggilan langsung ke DeepSeek API dari Browser
+async function callDeepSeekDirect(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  systemInstruction?: string,
+  signal?: AbortSignal
+): Promise<string> {
+  const cleanKey = apiKey.trim();
+  if (!cleanKey) {
+    throw new Error('API Key DeepSeek belum diisi. Silakan masukkan API Key di menu Setting Multi-AI.');
+  }
+
+  const messages: any[] = [];
+  if (systemInstruction) {
+    messages.push({ role: 'system', content: systemInstruction });
+  }
+  messages.push({
+    role: 'user',
+    content: `${prompt}\n\nWajib kembalikan format JSON murni yang valid tanpa kata pembuka atau markdown quotes.`,
+  });
+
+  const targetModel = model.trim() || 'deepseek-chat';
+
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${cleanKey}`,
+    },
+    body: JSON.stringify({
+      model: targetModel,
+      messages,
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+    }),
+    signal,
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    const errorMsg = data?.error?.message || `DeepSeek API Error (HTTP ${response.status})`;
+    if (errorMsg.includes('Authentication') || errorMsg.includes('Invalid API key') || response.status === 401) {
+      throw new Error('API Key DeepSeek tidak valid. Pastikan menyalin kunci resmi dari https://platform.deepseek.com/api_keys');
+    }
+    throw new Error(errorMsg);
+  }
+
+  return data.choices?.[0]?.message?.content || '';
+}
+
 // Eksekusi Pembuatan Paket Soal via Client-Side AI
 export async function generateQuestionsClientAI(
   config: AssessmentConfig,
@@ -319,7 +386,17 @@ Format kembalian wajib JSON array:
   let modelUsed = '';
   let providerName = '';
 
-  if (provider === 'openai') {
+  if (provider === 'deepseek') {
+    const key = aiCfg.deepseek?.apiKey?.trim();
+    if (!key) {
+      throw new Error(
+        'API Key DeepSeek belum diatur. Masukkan API Key di menu "Setting Multi-AI" (dapatkan di platform.deepseek.com) atau gunakan Google Gemini / Template Cerdas Lokal.'
+      );
+    }
+    modelUsed = aiCfg.deepseek.model || 'deepseek-chat';
+    providerName = 'DeepSeek AI';
+    responseText = await callDeepSeekDirect(key, modelUsed, prompt, systemInstruction, signal);
+  } else if (provider === 'openai') {
     const key = aiCfg.openai.apiKey.trim();
     if (!key) {
       throw new Error(
@@ -371,12 +448,25 @@ Format kembalian wajib JSON array:
 
 // Uji Koneksi Provider AI dari Browser
 export async function testAiProviderClient(
-  provider: 'gemini' | 'openai' | 'anthropic',
+  provider: 'gemini' | 'openai' | 'anthropic' | 'deepseek',
   apiKey: string,
   model?: string
 ): Promise<{ success: boolean; message: string; reply?: string; model?: string }> {
   try {
-    if (provider === 'gemini') {
+    if (provider === 'deepseek') {
+      const m = model || 'deepseek-chat';
+      const text = await callDeepSeekDirect(
+        apiKey,
+        m,
+        'Uji koneksi DeepSeek API untuk SDN Kandangan I Tosari. Jawab satu kata: Sukses'
+      );
+      return {
+        success: true,
+        message: `Koneksi DeepSeek AI Berhasil! Terhubung langsung ke model ${m}.`,
+        reply: text.trim(),
+        model: m,
+      };
+    } else if (provider === 'gemini') {
       const m = model || 'gemini-2.5-flash';
       const text = await callGeminiDirect(
         apiKey,

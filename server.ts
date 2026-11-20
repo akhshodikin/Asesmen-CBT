@@ -216,13 +216,62 @@ async function callAnthropic(apiKey: string, model: string, prompt: string, syst
   return data.content?.[0]?.text || '';
 }
 
-// Router Universal AI Multi-Provider (Gemini, OpenAI GPT, Anthropic Claude)
+// Eksekutor panggilan ke DeepSeek AI (deepseek-chat, deepseek-reasoner)
+async function callDeepSeek(apiKey: string, model: string, prompt: string, systemInstruction?: string): Promise<string> {
+  const messages = [];
+  if (systemInstruction) {
+    messages.push({ role: 'system', content: systemInstruction });
+  }
+  messages.push({
+    role: 'user',
+    content: `${prompt}\n\nWajib kembalikan format JSON murni yang valid tanpa kata pembuka atau markdown quotes.`,
+  });
+
+  const res = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey.trim()}`,
+    },
+    body: JSON.stringify({
+      model: model || 'deepseek-chat',
+      messages,
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+    }),
+  });
+
+  const data = (await res.json()) as any;
+  if (!res.ok) {
+    throw new Error(data?.error?.message || `DeepSeek API Error (HTTP ${res.status})`);
+  }
+  return data.choices?.[0]?.message?.content || '';
+}
+
+// Router Universal AI Multi-Provider (Gemini, DeepSeek, OpenAI GPT, Anthropic Claude)
 async function callUniversalAI(options: {
   contents: string;
   systemInstruction?: string;
   responseSchema?: any;
 }): Promise<{ text: string; provider: string; model: string }> {
   const activeProvider = (process.env.AI_PROVIDER || 'gemini').toLowerCase().trim();
+
+  // Opsi: DeepSeek AI
+  if (activeProvider === 'deepseek') {
+    const key = process.env.DEEPSEEK_API_KEY?.trim();
+    const model = process.env.DEEPSEEK_MODEL?.trim() || 'deepseek-chat';
+    if (key) {
+      try {
+        console.log(`[AI Provider] Menggunakan DeepSeek AI (${model})...`);
+        const text = await callDeepSeek(key, model, options.contents, options.systemInstruction);
+        return { text, provider: 'DeepSeek AI', model };
+      } catch (err: unknown) {
+        console.warn('[AI Provider] DeepSeek gagal, beralih ke fallback Gemini:', err instanceof Error ? err.message : err);
+      }
+    } else {
+      console.warn('[AI Provider] DEEPSEEK_API_KEY belum diisi, otomatis menggunakan Google Gemini.');
+    }
+  }
 
   // Opsi 1: OpenAI GPT
   if (activeProvider === 'openai') {
@@ -331,6 +380,12 @@ async function startServer() {
         model: process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini',
         availableModels: ['gpt-4o-mini', 'gpt-4o'],
       },
+      deepseek: {
+        hasKey: Boolean(process.env.DEEPSEEK_API_KEY?.trim()),
+        keyMasked: maskKey(process.env.DEEPSEEK_API_KEY),
+        model: process.env.DEEPSEEK_MODEL?.trim() || 'deepseek-chat',
+        availableModels: ['deepseek-chat', 'deepseek-reasoner'],
+      },
       anthropic: {
         hasKey: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
         keyMasked: maskKey(process.env.ANTHROPIC_API_KEY),
@@ -349,6 +404,8 @@ async function startServer() {
         geminiModel,
         openaiApiKey,
         openaiModel,
+        deepseekApiKey,
+        deepseekModel,
         anthropicApiKey,
         anthropicModel,
       } = req.body ?? {};
@@ -358,17 +415,23 @@ async function startServer() {
       if (geminiModel) process.env.GEMINI_MODEL = geminiModel;
       if (openaiApiKey !== undefined && openaiApiKey.trim() !== '') process.env.OPENAI_API_KEY = openaiApiKey.trim();
       if (openaiModel) process.env.OPENAI_MODEL = openaiModel;
+      if (deepseekApiKey !== undefined && deepseekApiKey.trim() !== '') process.env.DEEPSEEK_API_KEY = deepseekApiKey.trim();
+      if (deepseekModel) process.env.DEEPSEEK_MODEL = deepseekModel;
       if (anthropicApiKey !== undefined && anthropicApiKey.trim() !== '') process.env.ANTHROPIC_API_KEY = anthropicApiKey.trim();
       if (anthropicModel) process.env.ANTHROPIC_MODEL = anthropicModel;
 
       const envPath = path.resolve(__dirname, '.env');
       const lines = [
-        `# Konfigurasi Provider AI: gemini | openai | anthropic`,
+        `# Konfigurasi Provider AI: gemini | openai | anthropic | deepseek`,
         `AI_PROVIDER=${process.env.AI_PROVIDER || 'gemini'}`,
         ``,
         `# Google Gemini`,
         `GEMINI_API_KEY=${process.env.GEMINI_API_KEY || ''}`,
         `GEMINI_MODEL=${process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'}`,
+        ``,
+        `# DeepSeek AI (deepseek-chat, deepseek-reasoner)`,
+        `DEEPSEEK_API_KEY=${process.env.DEEPSEEK_API_KEY || ''}`,
+        `DEEPSEEK_MODEL=${process.env.DEEPSEEK_MODEL || 'deepseek-chat'}`,
         ``,
         `# OpenAI GPT (gpt-4o-mini, gpt-4o)`,
         `OPENAI_API_KEY=${process.env.OPENAI_API_KEY || ''}`,
@@ -398,6 +461,24 @@ async function startServer() {
     try {
       const { provider, apiKey, model } = req.body ?? {};
       const targetProvider = (provider || 'gemini').toLowerCase().trim();
+
+      if (targetProvider === 'deepseek') {
+        const key = apiKey?.trim() || process.env.DEEPSEEK_API_KEY?.trim();
+        if (!key) {
+          res.status(400).json({ success: false, message: 'DEEPSEEK_API_KEY belum diisi.' });
+          return;
+        }
+        const m = model || process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+        const reply = await callDeepSeek(key, m, 'Jawab dalam satu kata: Sukses', 'Anda asisten cerdas.');
+        res.json({
+          success: true,
+          message: `Koneksi DeepSeek AI Berhasil! Terhubung ke model ${m}.`,
+          reply: reply.trim(),
+          provider: 'DeepSeek AI',
+          model: m,
+        });
+        return;
+      }
 
       if (targetProvider === 'openai') {
         const key = apiKey?.trim() || process.env.OPENAI_API_KEY?.trim();

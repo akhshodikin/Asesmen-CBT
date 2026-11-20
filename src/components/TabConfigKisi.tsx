@@ -72,13 +72,16 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
   onFileUpload,
   onParseRawText,
 }) => {
-  // Multi-AI Provider State (Gemini, OpenAI GPT, Anthropic Claude)
+  // Multi-AI Provider State (Gemini, DeepSeek, OpenAI GPT, Anthropic Claude)
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-  const [activeProviderTab, setActiveProviderTab] = useState<'gemini' | 'openai' | 'anthropic'>('gemini');
+  const [activeProviderTab, setActiveProviderTab] = useState<'gemini' | 'openai' | 'anthropic' | 'deepseek'>('gemini');
   const [selectedMainProvider, setSelectedMainProvider] = useState<string>('gemini');
 
   const [geminiKeyInput, setGeminiKeyInput] = useState('');
   const [geminiModelInput, setGeminiModelInput] = useState('gemini-3.5-flash-lite');
+
+  const [deepseekKeyInput, setDeepseekKeyInput] = useState('');
+  const [deepseekModelInput, setDeepseekModelInput] = useState('deepseek-chat');
 
   const [openaiKeyInput, setOpenaiKeyInput] = useState('');
   const [openaiModelInput, setOpenaiModelInput] = useState('gpt-4o-mini');
@@ -105,10 +108,12 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
     const stored = getStoredAiConfig();
     if (stored.activeProvider) {
       setSelectedMainProvider(stored.activeProvider);
-      setActiveProviderTab(stored.activeProvider);
+      setActiveProviderTab(stored.activeProvider as 'gemini' | 'openai' | 'anthropic' | 'deepseek');
     }
     if (stored.gemini?.apiKey) setGeminiKeyInput(stored.gemini.apiKey);
     if (stored.gemini?.model) setGeminiModelInput(stored.gemini.model);
+    if (stored.deepseek?.apiKey) setDeepseekKeyInput(stored.deepseek.apiKey);
+    if (stored.deepseek?.model) setDeepseekModelInput(stored.deepseek.model);
     if (stored.openai?.apiKey) setOpenaiKeyInput(stored.openai.apiKey);
     if (stored.openai?.model) setOpenaiModelInput(stored.openai.model);
     if (stored.anthropic?.apiKey) setAnthropicKeyInput(stored.anthropic.apiKey);
@@ -123,9 +128,10 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
         setAiConfig(data);
         if (data.activeProvider) {
           setSelectedMainProvider(data.activeProvider);
-          setActiveProviderTab(data.activeProvider as 'gemini' | 'openai' | 'anthropic');
+          setActiveProviderTab(data.activeProvider as 'gemini' | 'openai' | 'anthropic' | 'deepseek');
         }
         if (data.gemini?.model && !stored.gemini?.model) setGeminiModelInput(data.gemini.model);
+        if (data.deepseek?.model && !stored.deepseek?.model) setDeepseekModelInput(data.deepseek.model);
         if (data.openai?.model && !stored.openai?.model) setOpenaiModelInput(data.openai.model);
         if (data.anthropic?.model && !stored.anthropic?.model) setAnthropicModelInput(data.anthropic.model);
       }
@@ -138,7 +144,7 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
     fetchAiConfig();
   }, []);
 
-  const handleTestProvider = async (provider: 'gemini' | 'openai' | 'anthropic') => {
+  const handleTestProvider = async (provider: 'gemini' | 'openai' | 'anthropic' | 'deepseek') => {
     setIsTestingKey(true);
     setTestKeyResult(null);
     let apiKey = '';
@@ -146,6 +152,9 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
     if (provider === 'gemini') {
       apiKey = geminiKeyInput.trim();
       model = geminiModelInput;
+    } else if (provider === 'deepseek') {
+      apiKey = deepseekKeyInput.trim();
+      model = deepseekModelInput;
     } else if (provider === 'openai') {
       apiKey = openaiKeyInput.trim();
       model = openaiModelInput;
@@ -188,10 +197,14 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
 
     // 1. Simpan langsung ke localStorage (Permanen di browser)
     saveStoredAiConfig({
-      activeProvider: selectedMainProvider,
+      activeProvider: selectedMainProvider as any,
       gemini: {
         apiKey: geminiKeyInput.trim(),
         model: geminiModelInput,
+      },
+      deepseek: {
+        apiKey: deepseekKeyInput.trim(),
+        model: deepseekModelInput,
       },
       openai: {
         apiKey: openaiKeyInput.trim(),
@@ -212,6 +225,8 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
           activeProvider: selectedMainProvider,
           geminiApiKey: geminiKeyInput.trim(),
           geminiModel: geminiModelInput,
+          deepseekApiKey: deepseekKeyInput.trim(),
+          deepseekModel: deepseekModelInput,
           openaiApiKey: openaiKeyInput.trim(),
           openaiModel: openaiModelInput,
           anthropicApiKey: anthropicKeyInput.trim(),
@@ -1107,7 +1122,7 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-900">
-                    Pengaturan Multi-AI (Gemini, GPT &amp; Claude)
+                    Pengaturan Multi-AI (Gemini, DeepSeek, GPT &amp; Claude)
                   </h3>
                   <p className="text-xs text-slate-500">
                     Pilih model kecerdasan buatan favorit Anda untuk menyusun butir asesmen otomatis
@@ -1124,23 +1139,42 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
             </div>
 
             {/* Provider Tabs Bar */}
-            <div className="flex border-b border-slate-200 bg-slate-50/70 p-1.5 gap-1.5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 border-b border-slate-200 bg-slate-50/70 p-1.5 gap-1.5">
               <button
                 type="button"
                 onClick={() => {
                   setActiveProviderTab('gemini');
                   setTestKeyResult(null);
                 }}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   activeProviderTab === 'gemini'
                     ? 'bg-white text-purple-900 shadow-xs border border-purple-200'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
                 }`}
               >
-                <Sparkles className="w-4 h-4 text-purple-600" />
-                <span>Google Gemini</span>
+                <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
+                <span className="truncate">Gemini</span>
                 {selectedMainProvider === 'gemini' && (
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" title="Provider Utama Aktif" />
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Provider Utama Aktif" />
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveProviderTab('deepseek');
+                  setTestKeyResult(null);
+                }}
+                className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  activeProviderTab === 'deepseek'
+                    ? 'bg-white text-blue-900 shadow-xs border border-blue-300'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+                }`}
+              >
+                <Zap className="w-4 h-4 text-blue-600 shrink-0" />
+                <span className="truncate">DeepSeek</span>
+                {selectedMainProvider === 'deepseek' && (
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Provider Utama Aktif" />
                 )}
               </button>
 
@@ -1150,16 +1184,16 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
                   setActiveProviderTab('openai');
                   setTestKeyResult(null);
                 }}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   activeProviderTab === 'openai'
                     ? 'bg-white text-emerald-900 shadow-xs border border-emerald-200'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
                 }`}
               >
-                <Bot className="w-4 h-4 text-emerald-600" />
-                <span>OpenAI GPT</span>
+                <Bot className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span className="truncate">OpenAI</span>
                 {selectedMainProvider === 'openai' && (
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" title="Provider Utama Aktif" />
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Provider Utama Aktif" />
                 )}
               </button>
 
@@ -1169,16 +1203,16 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
                   setActiveProviderTab('anthropic');
                   setTestKeyResult(null);
                 }}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   activeProviderTab === 'anthropic'
                     ? 'bg-white text-amber-900 shadow-xs border border-amber-200'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
                 }`}
               >
-                <Brain className="w-4 h-4 text-amber-600" />
-                <span>Anthropic Claude</span>
+                <Brain className="w-4 h-4 text-amber-600 shrink-0" />
+                <span className="truncate">Claude</span>
                 {selectedMainProvider === 'anthropic' && (
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" title="Provider Utama Aktif" />
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Provider Utama Aktif" />
                 )}
               </button>
             </div>
@@ -1271,7 +1305,63 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
                 </div>
               )}
 
-              {/* TAB 2: OPENAI GPT */}
+              {/* TAB 2: DEEPSEEK AI */}
+              {activeProviderTab === 'deepseek' && (
+                <div className="space-y-3.5">
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-bold text-slate-700">Pilih Model DeepSeek:</label>
+                    <select
+                      value={deepseekModelInput}
+                      onChange={(e) => setDeepseekModelInput(e.target.value)}
+                      className="w-full text-xs p-2.5 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-600 focus:outline-none"
+                    >
+                      <option value="deepseek-chat">deepseek-chat (DeepSeek-V3, Cepat, Pintar &amp; Paling Hemat)</option>
+                      <option value="deepseek-reasoner">deepseek-reasoner (DeepSeek-R1, Penalaran Logika &amp; Sains Mendalam)</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-700">DEEPSEEK_API_KEY:</label>
+                      <span className="text-[11px] font-mono text-blue-900 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                        {deepseekKeyInput ? 'Tersimpan di Browser' : (aiConfig?.deepseek?.keyMasked || 'Belum Ada Kunci')}
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={deepseekKeyInput}
+                        onChange={(e) => setDeepseekKeyInput(e.target.value)}
+                        placeholder="Contoh: sk-xxxxxxxxxxxxxxxx..."
+                        className="w-full text-xs font-mono p-2.5 pr-20 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleTestProvider('deepseek')}
+                        disabled={isTestingKey}
+                        className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-blue-100 hover:bg-blue-200 text-blue-900 font-bold text-[11px] rounded-md transition-colors cursor-pointer flex items-center gap-1"
+                      >
+                        {isTestingKey ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>⚡ Uji API</span>}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="bg-blue-50/80 border border-blue-200 rounded-xl p-3 text-xs text-blue-950 flex items-center justify-between gap-2">
+                    <span className="text-[11px]">Dapatkan Kunci Resmi di Platform DeepSeek:</span>
+                    <a
+                      href="https://platform.deepseek.com/api_keys"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-bold underline text-blue-700 hover:text-blue-900 flex items-center gap-1 text-[11px] shrink-0"
+                    >
+                      <span>platform.deepseek.com</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: OPENAI GPT */}
               {activeProviderTab === 'openai' && (
                 <div className="space-y-3.5">
                   <div className="space-y-1.5">
