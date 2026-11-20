@@ -26,6 +26,11 @@ import {
 } from 'lucide-react';
 import { BLOOM_LEVELS, EIGHT_DIMENSIONS, SUBJECTS } from '../data/schoolData';
 import type { AssessmentConfig, KisiKisiItem } from '../types';
+import {
+  getStoredAiConfig,
+  saveStoredAiConfig,
+  testAiProviderClient,
+} from '../utils/aiClientService';
 import { generateRandomToken } from '../utils/cbtPackageHelpers';
 
 interface TabConfigKisiProps {
@@ -96,17 +101,34 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
   const [aiConfig, setAiConfig] = useState<any>(null);
 
   const fetchAiConfig = async () => {
+    // 1. Ambil dari localStorage terlebih dahulu (Bekerja 100% di browser & Firebase Hosting)
+    const stored = getStoredAiConfig();
+    if (stored.activeProvider) {
+      setSelectedMainProvider(stored.activeProvider);
+      setActiveProviderTab(stored.activeProvider);
+    }
+    if (stored.gemini?.apiKey) setGeminiKeyInput(stored.gemini.apiKey);
+    if (stored.gemini?.model) setGeminiModelInput(stored.gemini.model);
+    if (stored.openai?.apiKey) setOpenaiKeyInput(stored.openai.apiKey);
+    if (stored.openai?.model) setOpenaiModelInput(stored.openai.model);
+    if (stored.anthropic?.apiKey) setAnthropicKeyInput(stored.anthropic.apiKey);
+    if (stored.anthropic?.model) setAnthropicModelInput(stored.anthropic.model);
+
+    // 2. Coba sinkronisasi dengan server backend lokal jika ada
     try {
       const res = await fetch('/api/ai-config');
-      const data = await res.json();
-      setAiConfig(data);
-      if (data.activeProvider) {
-        setSelectedMainProvider(data.activeProvider);
-        setActiveProviderTab(data.activeProvider as 'gemini' | 'openai' | 'anthropic');
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        setAiConfig(data);
+        if (data.activeProvider) {
+          setSelectedMainProvider(data.activeProvider);
+          setActiveProviderTab(data.activeProvider as 'gemini' | 'openai' | 'anthropic');
+        }
+        if (data.gemini?.model && !stored.gemini?.model) setGeminiModelInput(data.gemini.model);
+        if (data.openai?.model && !stored.openai?.model) setOpenaiModelInput(data.openai.model);
+        if (data.anthropic?.model && !stored.anthropic?.model) setAnthropicModelInput(data.anthropic.model);
       }
-      if (data.gemini?.model) setGeminiModelInput(data.gemini.model);
-      if (data.openai?.model) setOpenaiModelInput(data.openai.model);
-      if (data.anthropic?.model) setAnthropicModelInput(data.anthropic.model);
     } catch {
       // ignore
     }
@@ -132,29 +154,58 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
       model = anthropicModelInput;
     }
 
+    let testedViaBackend = false;
+
+    // 1. Coba lewat backend jika ada
     try {
       const res = await fetch('/api/test-ai-provider', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider, apiKey, model }),
       });
-      const data = await res.json();
-      setTestKeyResult(data);
-    } catch (err: unknown) {
-      setTestKeyResult({
-        success: false,
-        message: err instanceof Error ? err.message : 'Gagal menghubungi server.',
-      });
-    } finally {
-      setIsTestingKey(false);
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        setTestKeyResult(data);
+        testedViaBackend = true;
+      }
+    } catch {
+      // Backend not running / offline
     }
+
+    // 2. Jika di Firebase Hosting (tanpa backend), uji langsung dari Browser
+    if (!testedViaBackend) {
+      const clientResult = await testAiProviderClient(provider, apiKey, model);
+      setTestKeyResult(clientResult);
+    }
+
+    setIsTestingKey(false);
   };
 
   const handleSaveAiConfig = async (triggerGenerate = false) => {
     setIsSavingKey(true);
     setSaveKeyError('');
+
+    // 1. Simpan langsung ke localStorage (Permanen di browser)
+    saveStoredAiConfig({
+      activeProvider: selectedMainProvider,
+      gemini: {
+        apiKey: geminiKeyInput.trim(),
+        model: geminiModelInput,
+      },
+      openai: {
+        apiKey: openaiKeyInput.trim(),
+        model: openaiModelInput,
+      },
+      anthropic: {
+        apiKey: anthropicKeyInput.trim(),
+        model: anthropicModelInput,
+      },
+    });
+
+    // 2. Coba simpan ke backend jika backend aktif
     try {
-      const res = await fetch('/api/save-ai-config', {
+      await fetch('/api/save-ai-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -167,27 +218,23 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
           anthropicModel: anthropicModelInput,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error || 'Gagal menyimpan konfigurasi AI.');
-      }
-      setSaveKeySuccess(true);
-      fetchAiConfig();
-      if (triggerGenerate) {
-        setTimeout(() => {
-          setShowApiKeyModal(false);
-          setSaveKeySuccess(false);
-          onGenerateAI();
-        }, 800);
-      } else {
-        setTimeout(() => {
-          setSaveKeySuccess(false);
-        }, 3000);
-      }
-    } catch (err: unknown) {
-      setSaveKeyError(err instanceof Error ? err.message : 'Gagal menyimpan konfigurasi AI.');
-    } finally {
-      setIsSavingKey(false);
+    } catch {
+      // ignore
+    }
+
+    setSaveKeySuccess(true);
+    setIsSavingKey(false);
+    fetchAiConfig();
+    if (triggerGenerate) {
+      setTimeout(() => {
+        setShowApiKeyModal(false);
+        setSaveKeySuccess(false);
+        onGenerateAI();
+      }, 800);
+    } else {
+      setTimeout(() => {
+        setSaveKeySuccess(false);
+      }, 3000);
     }
   };
 

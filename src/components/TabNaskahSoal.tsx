@@ -68,27 +68,43 @@ export const TabNaskahSoal: React.FC<TabNaskahSoalProps> = ({
     setImageError('');
     try {
       const mode = imageStyle === 'realistic' ? 'realistic' : 'svg';
-      const response = await fetch('/api/generate-question-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: q,
-          prompt: promptInput,
-          mode,
-        }),
-      });
+      let imageUrl = '';
+      let deskripsi = promptInput;
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.error || `Gagal menghasilkan gambar (HTTP ${response.status})`);
+      // 1. Coba lewat backend jika ada
+      try {
+        const response = await fetch('/api/generate-question-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question: q,
+            prompt: promptInput,
+            mode,
+          }),
+        });
+
+        const contentType = response.headers.get('content-type') || '';
+        if (response.ok && contentType.includes('application/json')) {
+          const data = await response.json();
+          if (data?.imageUrl) {
+            imageUrl = data.imageUrl;
+            deskripsi = data.deskripsi || promptInput;
+          }
+        }
+      } catch {
+        // Backend not available
       }
 
-      if (data?.imageUrl) {
-        setPreviewUrl(data.imageUrl);
-        setPreviewDesc(data.deskripsi || promptInput);
-      } else {
-        throw new Error('Respons server tidak mengandung URL gambar yang valid.');
+      // 2. Direct client-side generation jika backend tidak ada
+      if (!imageUrl) {
+        const cleanPrompt = encodeURIComponent(
+          (promptInput.trim() || `${q.materi} ${q.pertanyaan}`).slice(0, 100)
+        );
+        imageUrl = `https://image.pollinations.ai/prompt/${cleanPrompt}?width=600&height=400&nologo=true`;
       }
+
+      setPreviewUrl(imageUrl);
+      setPreviewDesc(deskripsi);
     } catch (err: unknown) {
       setImageError(err instanceof Error ? err.message : 'Gagal menghasilkan gambar AI.');
     } finally {

@@ -1,4 +1,5 @@
 import type { BankQuestionItem, QuestionItem, QuestionShape } from '../types';
+import { getStoredAiConfig } from './aiClientService';
 import { downloadTextFile } from './exportHelpers';
 import mammoth from 'mammoth';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -884,17 +885,21 @@ export async function parseQuestionsWithAI(
   mapel: string,
   kelas: string
 ): Promise<ParseResult> {
+  const aiConfig = getStoredAiConfig();
   const geminiKey =
-    (typeof window !== 'undefined' ? window.localStorage.getItem('gemini_api_key') : '') || '';
+    aiConfig.gemini.apiKey ||
+    (typeof window !== 'undefined' ? window.localStorage.getItem('gemini_api_key') : '') ||
+    '';
 
-  // 1. Coba lewat backend server
+  // 1. Coba lewat backend server jika backend tersedia
   try {
     const res = await fetch('/api/parse-raw-questions-ai', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rawText, mapel, kelas, apiKey: geminiKey }),
     });
-    if (res.ok) {
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
       if (Array.isArray(data.questions) && data.questions.length > 0) {
         return {

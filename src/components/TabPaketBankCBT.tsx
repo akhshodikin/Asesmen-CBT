@@ -32,6 +32,7 @@ import {
   SUBJECTS,
   buildLocalTemplateQuestions,
 } from '../data/schoolData';
+import { generateQuestionsClientAI } from '../utils/aiClientService';
 import type {
   ActiveTab,
   AssessmentConfig,
@@ -532,21 +533,44 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
       let sourceLabel: 'AI Gemini' | 'Template Lokal' = 'AI Gemini';
 
       try {
-        const response = await fetch('/api/generate-questions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            config: genConfig,
-            kisiKisiList: customKisi,
-            rawKisiText: genAiTopik.trim(),
-            totalRequestedQuestions: totalReq,
-          }),
-        });
-        const data = await response.json();
-        if (response.ok && Array.isArray(data?.questions) && data.questions.length > 0) {
-          generatedList = data.questions;
+        let backendQuestions: QuestionItem[] | null = null;
+        try {
+          const response = await fetch('/api/generate-questions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              config: genConfig,
+              kisiKisiList: customKisi,
+              rawKisiText: genAiTopik.trim(),
+              totalRequestedQuestions: totalReq,
+            }),
+          });
+          const contentType = response.headers.get('content-type') || '';
+          if (response.ok && contentType.includes('application/json')) {
+            const data = await response.json();
+            if (Array.isArray(data?.questions) && data.questions.length > 0) {
+              backendQuestions = data.questions;
+            }
+          }
+        } catch {
+          // Backend offline / not available on static hosting
+        }
+
+        if (backendQuestions && backendQuestions.length > 0) {
+          generatedList = backendQuestions;
         } else {
-          throw new Error(data?.error || 'AI tidak tersedia');
+          // Coba direct client-side AI jika API key tersedia di browser
+          const clientRes = await generateQuestionsClientAI(
+            genConfig,
+            customKisi,
+            genAiTopik.trim(),
+            totalReq
+          );
+          if (Array.isArray(clientRes.questions) && clientRes.questions.length > 0) {
+            generatedList = clientRes.questions;
+          } else {
+            throw new Error('AI tidak mengembalikan soal valid');
+          }
         }
       } catch {
         // Fallback smoothly to Local Template generator so teacher always gets a working test package

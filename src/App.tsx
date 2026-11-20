@@ -33,6 +33,7 @@ import { TabPaketBankCBT } from './components/TabPaketBankCBT';
 import { TabPenilaianAnalisis } from './components/TabPenilaianAnalisis';
 import { TabPortalCBT } from './components/TabPortalCBT';
 import { TabProfilSekolah } from './components/TabProfilSekolah';
+import { generateQuestionsClientAI } from './utils/aiClientService';
 import {
   buildLocalTemplateQuestions,
   DEFAULT_CONFIG,
@@ -540,29 +541,63 @@ export default function App() {
     }, 50000);
 
     try {
-      const response = await fetch('/api/generate-questions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
+      let questionsResult: QuestionItem[] | null = null;
+      let needClientFallback = false;
+
+      // 1. Coba hubungi server backend lokal terlebih dahulu jika ada
+      try {
+        const response = await fetch('/api/generate-questions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            config,
+            kisiKisiList,
+            rawKisiText,
+            totalRequestedQuestions,
+          }),
+        });
+
+        const contentType = response.headers.get('content-type') || '';
+        // Jika server mengembalikan HTML (misal rewrite index.html di Firebase Hosting)
+        if (!contentType.includes('application/json')) {
+          needClientFallback = true;
+        } else {
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data?.error || `Gagal menyusun soal (HTTP ${response.status})`);
+          }
+          if (Array.isArray(data?.questions) && data.questions.length > 0) {
+            questionsResult = data.questions;
+          } else {
+            needClientFallback = true;
+          }
+        }
+      } catch (backendErr: unknown) {
+        if (backendErr instanceof Error && backendErr.name === 'AbortError') {
+          throw backendErr;
+        }
+        needClientFallback = true;
+      }
+
+      // 2. Jika backend tidak tersedia (misal di Firebase Hosting), eksekusi AI langsung dari Browser
+      if (needClientFallback || !questionsResult) {
+        const clientRes = await generateQuestionsClientAI(
           config,
           kisiKisiList,
           rawKisiText,
           totalRequestedQuestions,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.error || `Gagal menyusun soal (HTTP ${response.status})`);
+          controller.signal
+        );
+        questionsResult = clientRes.questions;
       }
 
-      if (Array.isArray(data?.questions) && data.questions.length > 0) {
-        setQuestions(data.questions);
+      if (Array.isArray(questionsResult) && questionsResult.length > 0) {
+        setQuestions(questionsResult);
         setActivePackageId(null);
         setActiveTab('naskah');
       } else {
-        throw new Error('Respons server tidak mengandung daftar soal yang valid.');
+        throw new Error('Respons AI tidak menghasilkan daftar soal yang valid.');
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
@@ -570,10 +605,11 @@ export default function App() {
           'Proses penyusunan AI dihentikan atau melebihi batas waktu 50 detik. Anda dapat langsung menggunakan tombol "Gunakan Template Cerdas Lokal" di bawah ini yang siap pakai seketika (0 detik) tanpa perlu menunggu AI!'
         );
       } else {
+        const rawMessage = err instanceof Error ? err.message : String(err);
         const message =
-          err instanceof Error
-            ? err.message
-            : 'Terjadi kendala menghubungi layanan AI. Pastikan GEMINI_API_KEY aktif atau gunakan tombol Buat Template Lokal.';
+          rawMessage.includes("Unexpected token '<'") || rawMessage.includes('is not valid JSON')
+            ? 'Koneksi backend AI tidak aktif pada hosting Firebase. Silakan masukkan API Key Gemini Anda di menu "Setting Multi-AI" (pojok kanan atas), atau gunakan tombol "Gunakan Template Cerdas Lokal" di bawah ini yang siap pakai seketika!'
+            : rawMessage;
         setGenError(message);
       }
     } finally {
@@ -628,6 +664,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: q, config }),
       });
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('Fitur ganti soal AI memerlukan backend aktif atau silakan edit manual pada kartu soal.');
+      }
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data?.error || 'Gagal mengganti butir soal.');
@@ -640,7 +680,10 @@ export default function App() {
         });
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Gagal mengganti butir soal.';
+      const rawMessage = err instanceof Error ? err.message : 'Gagal mengganti butir soal.';
+      const message = rawMessage.includes("Unexpected token '<'")
+        ? 'Layanan backend AI tidak tersedia pada hosting. Anda dapat mengedit soal secara manual langsung pada kolom teks di atas.'
+        : rawMessage;
       setGenError(message);
     } finally {
       setEditingIndex(null);
