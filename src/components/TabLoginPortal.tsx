@@ -5,6 +5,7 @@ import {
   GraduationCap,
   KeyRound,
   LogIn,
+  Share2,
   Shield,
   UserCheck,
   Users,
@@ -17,6 +18,7 @@ interface TabLoginPortalProps {
   students: Student[];
   teachers: Teacher[];
   schoolProfile: SchoolProfile;
+  onOpenShareLinkModal?: () => void;
 }
 
 const ROLE_META: {
@@ -78,6 +80,7 @@ export const TabLoginPortal: React.FC<TabLoginPortalProps> = ({
   students,
   teachers,
   schoolProfile,
+  onOpenShareLinkModal,
 }) => {
   const [selectedRole, setSelectedRole] = useState<UserRole>(authSession.role);
   const [errorMsg, setErrorMsg] = useState('');
@@ -324,6 +327,28 @@ export const TabLoginPortal: React.FC<TabLoginPortalProps> = ({
             {/* Form Siswa */}
             {selectedRole === 'siswa' && (
               <div className="space-y-4">
+                {onOpenShareLinkModal && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-emerald-900 text-xs flex items-center gap-1.5">
+                        <Share2 className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>Link Langsung Ujian Siswa</span>
+                      </p>
+                      <p className="text-[11px] text-emerald-700 mt-0.5">
+                        Bagikan link praktis via WhatsApp atau QR Code agar siswa langsung masuk ke CBT tanpa login manual.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onOpenShareLinkModal}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold text-xs transition-colors shrink-0 flex items-center gap-1.5 justify-center cursor-pointer shadow-xs whitespace-nowrap"
+                    >
+                      <Share2 className="w-3.5 h-3.5" />
+                      <span>Bagikan Link Siswa</span>
+                    </button>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="font-semibold text-slate-700 block mb-1">Kelas</label>

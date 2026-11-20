@@ -14,10 +14,12 @@ import {
   Package,
   Printer,
   Settings,
+  Share2,
   UserCheck,
   Users,
   X,
 } from 'lucide-react';
+import { ModalShareStudentLink } from './components/ModalShareStudentLink';
 import { TabConfigKisi } from './components/TabConfigKisi';
 import { TabDashboard } from './components/TabDashboard';
 import { TabDataGuru } from './components/TabDataGuru';
@@ -78,7 +80,7 @@ const DEFAULT_AUTH_SESSION: AuthSession = {
 };
 
 const ALLOWED_TABS_BY_ROLE: Record<UserRole, ActiveTab[]> = {
-  siswa: ['dashboard', 'cbt', 'siswa', 'login'],
+  siswa: ['cbt', 'login'],
   guru: [
     'dashboard',
     'generator',
@@ -213,6 +215,46 @@ export default function App() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [filterKelasSiswa, setFilterKelasSiswa] = useState(config.kelas);
+  const [shareStudentModalOpen, setShareStudentModalOpen] = useState(false);
+
+  // URL Parameter Detection: Mengaktifkan Portal Siswa otomatis jika tautan khusus dibuka (?portal=siswa)
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return;
+      const params = new URLSearchParams(window.location.search);
+      const isSiswaPortal =
+        params.get('portal') === 'siswa' ||
+        params.get('role') === 'siswa' ||
+        params.get('siswa') === '1' ||
+        window.location.hash.toLowerCase().includes('siswa');
+
+      if (isSiswaPortal) {
+        const paramKelas = params.get('kelas') || undefined;
+        const paramToken = params.get('token') || undefined;
+        const paramNipd = params.get('nipd') || undefined;
+
+        setAuthSession({
+          role: 'siswa',
+          name: 'Peserta Didik',
+          identifier: paramNipd || 'SISWA-CBT',
+          loggedInAt: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+          kelas: paramKelas || 'Kelas 5',
+          nipd: paramNipd,
+        });
+
+        setActiveTab('cbt');
+
+        if (paramToken) {
+          setConfig((prev) => ({ ...prev, tokenCBT: paramToken.toUpperCase() }));
+        }
+        if (paramKelas) {
+          setConfig((prev) => ({ ...prev, kelas: paramKelas }));
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -832,16 +874,28 @@ export default function App() {
 
           <div className="flex items-center gap-2 shrink-0">
             {authSession.role !== 'siswa' && (
-              <button
-                type="button"
-                onClick={() => handleSelectTab('generator')}
-                className="flex items-center gap-1.5 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 font-semibold px-3 py-2 rounded-lg text-xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                title="Buka Pengaturan Multi-AI (Gemini, GPT, Claude)"
-              >
-                <KeyRound className="w-3.5 h-3.5 text-purple-700" />
-                <span className="hidden sm:inline">Setting Multi-AI</span>
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShareStudentModalOpen(true)}
+                  className="flex items-center gap-1.5 bg-gradient-to-r from-emerald-700 to-teal-700 hover:from-emerald-800 hover:to-teal-800 text-white font-bold px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                  title="Dapatkan link khusus siswa untuk dibagikan ke WhatsApp atau scan QR Code"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>Link Siswa</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSelectTab('generator')}
+                  className="flex items-center gap-1.5 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 font-semibold px-3 py-2 rounded-lg text-xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  title="Buka Pengaturan Multi-AI (Gemini, GPT, Claude)"
+                >
+                  <KeyRound className="w-3.5 h-3.5 text-purple-700" />
+                  <span className="hidden sm:inline">Setting Multi-AI</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -934,6 +988,7 @@ export default function App() {
               onActivatePackage={handleActivatePackage}
               onRandomizeToken={handleRandomizeToken}
               onSwitchTab={handleSelectTab}
+              onOpenShareLinkModal={() => setShareStudentModalOpen(true)}
             />
           )}
 
@@ -1010,6 +1065,7 @@ export default function App() {
               students={students}
               teachers={teachers}
               schoolProfile={schoolProfile}
+              onOpenShareLinkModal={() => setShareStudentModalOpen(true)}
             />
           )}
         </main>
@@ -1024,6 +1080,16 @@ export default function App() {
           </div>
         </footer>
       </div>
+
+      {/* Modal Bagikan Link Siswa */}
+      <ModalShareStudentLink
+        isOpen={shareStudentModalOpen}
+        onClose={() => setShareStudentModalOpen(false)}
+        config={config}
+        schoolProfile={schoolProfile}
+        examPackages={examPackages}
+        activePackageId={activePackageId}
+      />
     </div>
   );
 }

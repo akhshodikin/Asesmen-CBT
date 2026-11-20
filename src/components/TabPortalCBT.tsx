@@ -13,6 +13,7 @@ import {
   Monitor,
   Play,
   RotateCcw,
+  Share2,
   ShieldCheck,
   Shuffle,
 } from 'lucide-react';
@@ -48,6 +49,7 @@ interface TabPortalCBTProps {
   onActivatePackage: (pkg: ExamPackage, targetTab?: ActiveTab) => void;
   onRandomizeToken: () => void;
   onSwitchTab: (tab: ActiveTab) => void;
+  onOpenShareLinkModal?: () => void;
 }
 
 type CBTAnswerValue = string | number[] | Record<number, string>;
@@ -66,6 +68,7 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
   onActivatePackage,
   onRandomizeToken,
   onSwitchTab,
+  onOpenShareLinkModal,
 }) => {
   const isSiswaRole = authSession.role === 'siswa';
   const [cbtStage, setCbtStage] = useState<'login' | 'exam' | 'result' | 'rekap'>('login');
@@ -102,7 +105,13 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
     if (isSiswaRole) {
       if (authSession.kelas) setCbtKelas(authSession.kelas);
       if (authSession.nipd) setCbtStudentNipd(authSession.nipd);
-      setCbtTokenInput('');
+      const params = new URLSearchParams(window.location.search);
+      const urlToken = params.get('token');
+      if (urlToken) {
+        setCbtTokenInput(urlToken.trim().toUpperCase());
+      } else {
+        setCbtTokenInput('');
+      }
       if (cbtStage === 'rekap') setCbtStage('login');
     } else {
       setCbtKelas(config.kelas);
@@ -379,6 +388,17 @@ export const TabPortalCBT: React.FC<TabPortalCBTProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {!isSiswaRole && onOpenShareLinkModal && (
+            <button
+              type="button"
+              onClick={onOpenShareLinkModal}
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-sm transition-colors whitespace-nowrap cursor-pointer"
+              title="Bagikan link langsung ujian untuk siswa via WhatsApp / QR Code"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Bagikan Link Siswa</span>
+            </button>
+          )}
           {!isSiswaRole && (
             <button
               type="button"
