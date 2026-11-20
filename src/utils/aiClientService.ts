@@ -333,6 +333,15 @@ async function callDeepSeekDirect(
   const data = await response.json();
   if (!response.ok) {
     const errorMsg = data?.error?.message || `DeepSeek API Error (HTTP ${response.status})`;
+    if (
+      errorMsg.includes('Insufficient Balance') ||
+      response.status === 402 ||
+      data?.error?.code === 'insufficient_balance'
+    ) {
+      throw new Error(
+        'Saldo DeepSeek API Anda tidak mencukupi (Insufficient Balance). Silakan isi saldo di https://platform.deepseek.com/top_up, atau gunakan Google Gemini (Gratis) / Template Cerdas Lokal.'
+      );
+    }
     if (errorMsg.includes('Authentication') || errorMsg.includes('Invalid API key') || response.status === 401) {
       throw new Error('API Key DeepSeek tidak valid. Pastikan menyalin kunci resmi dari https://platform.deepseek.com/api_keys');
     }
@@ -438,7 +447,23 @@ Format kembalian wajib JSON array:
     }
     modelUsed = aiCfg.deepseek.model || 'deepseek-chat';
     providerName = 'DeepSeek AI';
-    responseText = await callDeepSeekDirect(key, modelUsed, prompt, systemInstruction, signal);
+    try {
+      responseText = await callDeepSeekDirect(key, modelUsed, prompt, systemInstruction, signal);
+    } catch (deepseekErr: any) {
+      const geminiKey = aiCfg.gemini?.apiKey?.trim();
+      const errMsg = deepseekErr?.message || '';
+      if (
+        (errMsg.includes('Insufficient Balance') || errMsg.includes('Saldo')) &&
+        geminiKey
+      ) {
+        console.warn('[DeepSeek] Saldo tidak mencukupi, otomatis beralih ke Google Gemini...');
+        modelUsed = aiCfg.gemini.model || 'gemini-3.8-flash';
+        providerName = 'Google Gemini (Fallback Otomatis)';
+        responseText = await callGeminiDirect(geminiKey, modelUsed, prompt, systemInstruction, signal);
+      } else {
+        throw deepseekErr;
+      }
+    }
   } else if (provider === 'openai') {
     const key = aiCfg.openai.apiKey.trim();
     if (!key) {
@@ -790,19 +815,33 @@ export async function testAiProviderClient(
 
     if (provider === 'deepseek') {
       const m = chosenModel || 'deepseek-chat';
-      const text = await callDeepSeekDirect(
-        apiKey,
-        m,
-        'Uji koneksi DeepSeek API untuk SDN Kandangan I Tosari. Jawab satu kata: Sukses'
-      );
-      return {
-        success: true,
-        message: `Koneksi DeepSeek AI Berhasil! Model ${m} aktif dan terdeteksi.`,
-        reply: text.trim(),
-        model: m,
-        detectedModels: modelDetection.models,
-        recommendedModel: modelDetection.recommendedModel,
-      };
+      try {
+        const text = await callDeepSeekDirect(
+          apiKey,
+          m,
+          'Uji koneksi DeepSeek API untuk SDN Kandangan I Tosari. Jawab satu kata: Sukses'
+        );
+        return {
+          success: true,
+          message: `Koneksi DeepSeek AI Berhasil! Model ${m} aktif dan terdeteksi.`,
+          reply: text.trim(),
+          model: m,
+          detectedModels: modelDetection.models,
+          recommendedModel: modelDetection.recommendedModel,
+        };
+      } catch (err: any) {
+        if (err.message?.includes('Insufficient Balance') || err.message?.includes('Saldo')) {
+          return {
+            success: false,
+            message:
+              'Kunci API DeepSeek terverifikasi valid, tetapi saldo akun DeepSeek Anda $0 (Insufficient Balance). Silakan isi saldo di https://platform.deepseek.com/top_up, ATAU beralih ke Google Gemini (Gratis 100% di aistudio.google.com/apikey).',
+            model: m,
+            detectedModels: modelDetection.models,
+            recommendedModel: modelDetection.recommendedModel,
+          };
+        }
+        throw err;
+      }
     } else if (provider === 'gemini') {
       const m = chosenModel || 'gemini-3.8-flash';
       const text = await callGeminiDirect(

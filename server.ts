@@ -241,7 +241,13 @@ async function callDeepSeek(apiKey: string, model: string, prompt: string, syste
 
   const data = (await res.json()) as any;
   if (!res.ok) {
-    throw new Error(data?.error?.message || `DeepSeek API Error (HTTP ${res.status})`);
+    const msg = data?.error?.message || `DeepSeek API Error (HTTP ${res.status})`;
+    if (msg.includes('Insufficient Balance') || res.status === 402 || data?.error?.code === 'insufficient_balance') {
+      throw new Error(
+        'Saldo DeepSeek API Anda tidak mencukupi (Insufficient Balance). Silakan isi saldo di https://platform.deepseek.com/top_up atau gunakan Google Gemini (Gratis).'
+      );
+    }
+    throw new Error(msg);
   }
   return data.choices?.[0]?.message?.content || '';
 }

@@ -1597,6 +1597,26 @@ export const TabConfigKisi: React.FC<TabConfigKisiProps> = ({
                       <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>
+
+                  <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 text-xs text-amber-950 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold flex items-center gap-1 text-[11px] text-amber-900">
+                        <span>ℹ️ Catatan Kuota DeepSeek API:</span>
+                      </span>
+                      <a
+                        href="https://platform.deepseek.com/top_up"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-bold underline text-blue-700 hover:text-blue-900 text-[11px] flex items-center gap-1"
+                      >
+                        <span>Top-up Saldo</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-amber-800">
+                      Jika muncul peringatan <strong>&quot;Insufficient Balance&quot;</strong>, artinya saldo akun DeepSeek Anda $0 (kredit gratis belum terisi/habis). Anda dapat melakukan top-up saldo mulai $2 di platform DeepSeek, atau beralih ke tab <strong>Google Gemini</strong> yang <strong>100% Gratis</strong> tanpa kartu kredit!
+                    </p>
+                  </div>
                 </div>
               )}
 
