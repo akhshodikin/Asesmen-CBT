@@ -61,6 +61,7 @@ import {
   downloadQuestionTemplateCSV,
   downloadQuestionTemplateJSON,
   downloadQuestionTemplateTXT,
+  extractTextFromFile,
   type ParseResult,
 } from '../utils/questionImportExport';
 
@@ -231,6 +232,7 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
   const [uploadNamaPaket, setUploadNamaPaket] = useState('');
   const [uploadParseResult, setUploadParseResult] = useState<ParseResult | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [isParsingUpload, setIsParsingUpload] = useState(false);
 
   const notify = (msg: string) => {
     setErrorMsg('');
@@ -803,30 +805,35 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
   };
 
   // --- UPLOAD & GOOGLE FORM HANDLERS ---
-  const handleFileSelect = (file: File) => {
+  const handleFileSelect = async (file: File) => {
     if (!file) return;
     setUploadFileName(file.name);
+    setIsParsingUpload(true);
+    setErrorMsg('');
+
     if (!uploadNamaPaket) {
       const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
       setUploadNamaPaket(`Paket Upload: ${cleanName}`);
     }
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = String(e.target?.result || '');
+    try {
+      const { text, detectedFormat } = await extractTextFromFile(file);
       setUploadRawText(text);
       const parsed = autoParseQuestions(text);
+      if (detectedFormat.includes('Word') || detectedFormat.includes('PDF')) {
+        parsed.detectedFormat = detectedFormat as any;
+      }
       setUploadParseResult(parsed);
       if (parsed.error) {
         setErrorMsg(parsed.error);
       } else {
-        notify(`File ${file.name} berhasil dibaca: ${parsed.totalDetected} butir soal terdeteksi.`);
+        notify(`File ${file.name} (${detectedFormat}) berhasil dibaca: ${parsed.totalDetected} butir soal terdeteksi.`);
       }
-    };
-    reader.onerror = () => {
-      setErrorMsg('Gagal membaca file. Pastikan file berupa teks, JSON, atau CSV yang valid.');
-    };
-    reader.readAsText(file);
+    } catch (err: any) {
+      setErrorMsg(`Gagal memproses file ${file.name}: ${err?.message || 'Format tidak didukung atau terjadi kesalahan baca.'}`);
+    } finally {
+      setIsParsingUpload(false);
+    }
   };
 
   const handleRawTextChange = (text: string) => {
@@ -2978,7 +2985,7 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
                   }`}
                 >
                   <FileUp className="w-4 h-4" />
-                  <span>1. Unggah File (.json, .txt, .csv)</span>
+                  <span>1. Unggah Dokumen (Word, PDF, JSON, CSV, TXT)</span>
                 </button>
                 <button
                   type="button"
@@ -3002,7 +3009,7 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
                   }`}
                 >
                   <Download className="w-4 h-4" />
-                  <span>3. Unduh Template Format Soal</span>
+                  <span>3. Panduan &amp; Template Format Soal</span>
                 </button>
               </div>
 
@@ -3031,7 +3038,7 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
                   <input
                     type="file"
                     id="bank-file-upload-input"
-                    accept=".json,.txt,.csv,.tsv"
+                    accept=".docx,.doc,.pdf,.json,.txt,.csv,.tsv"
                     onChange={(e) => {
                       const files = e.target.files;
                       if (files && files.length > 0) {
@@ -3040,26 +3047,40 @@ export const TabPaketBankCBT: React.FC<TabPaketBankCBTProps> = ({
                     }}
                     className="hidden"
                   />
-                  <div className="flex flex-col items-center justify-center space-y-3">
-                    <div className="p-4 bg-purple-100 text-purple-800 rounded-full">
-                      <Upload className="w-8 h-8" />
+                  {isParsingUpload ? (
+                    <div className="flex flex-col items-center justify-center space-y-3 py-6">
+                      <RefreshCw className="w-10 h-10 text-purple-700 animate-spin" />
+                      <div>
+                        <p className="text-sm font-bold text-purple-900">
+                          Sedang membaca &amp; mengekstrak naskah soal...
+                        </p>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Memproses dokumen Word / PDF ke struktur butir soal CBT &amp; Google Form...
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-sm font-bold text-slate-800">
-                        {uploadFileName ? `File Terpilih: ${uploadFileName}` : 'Seret & Letakkan file soal Anda di sini'}
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">
-                        Mendukung file: <strong>.JSON</strong> (Bank Soal), <strong>.TXT</strong> (Format Aiken / Naskah), dan <strong>.CSV</strong> (Excel).
-                      </p>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center space-y-3">
+                      <div className="p-4 bg-purple-100 text-purple-800 rounded-full">
+                        <Upload className="w-8 h-8" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-slate-800">
+                          {uploadFileName ? `File Terpilih: ${uploadFileName}` : 'Seret & Letakkan file Word, PDF, atau JSON Anda di sini'}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Mendukung: <strong>Microsoft Word (.docx, .doc)</strong>, <strong>Dokumen PDF (.pdf)</strong>, <strong>.JSON</strong>, <strong>.TXT</strong> (Format Aiken), dan <strong>.CSV</strong> (Excel).
+                        </p>
+                      </div>
+                      <label
+                        htmlFor="bank-file-upload-input"
+                        className="inline-flex items-center gap-2 bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-800 hover:to-indigo-800 text-white text-xs font-bold px-5 py-2.5 rounded-lg cursor-pointer transition-all shadow-sm"
+                      >
+                        <FileUp className="w-4 h-4" />
+                        <span>{uploadFileName ? 'Ganti File Dokumen' : 'Pilih Dokumen Word / PDF / JSON'}</span>
+                      </label>
                     </div>
-                    <label
-                      htmlFor="bank-file-upload-input"
-                      className="inline-flex items-center gap-2 bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold px-4 py-2 rounded-lg cursor-pointer transition-colors shadow-xs"
-                    >
-                      <FileUp className="w-4 h-4" />
-                      <span>{uploadFileName ? 'Ganti File' : 'Pilih File dari Komputer'}</span>
-                    </label>
-                  </div>
+                  )}
                 </div>
               )}
 
@@ -3099,70 +3120,90 @@ KUNCI: B`}
                 </div>
               )}
 
-              {/* Tab Content: Download Templates */}
+              {/* Tab Content: Download Templates & Guide */}
               {uploadInputTab === 'template' && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {/* Template JSON */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
-                    <div>
-                      <div className="p-2 bg-emerald-100 text-emerald-800 rounded-lg w-fit mb-2">
-                        <FileType className="w-5 h-5" />
-                      </div>
-                      <h4 className="font-bold text-xs text-slate-900">1. Template JSON (Lengkap)</h4>
-                      <p className="text-[11px] text-slate-600 mt-1">
-                        Format standar untuk cadangan Bank Soal, memuat atribut stimulus, tipe soal, materi, bloom, dan kunci.
-                      </p>
+                <div className="space-y-4">
+                  {/* Panduan Word & PDF */}
+                  <div className="bg-purple-50/70 border border-purple-200 rounded-xl p-4 text-xs space-y-2">
+                    <div className="flex items-center gap-2 text-purple-950 font-bold">
+                      <Sparkles className="w-4 h-4 text-purple-700" />
+                      <span>Panduan Format Dokumen Microsoft Word (.docx) &amp; PDF (.pdf):</span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={downloadQuestionTemplateJSON}
-                      className="w-full flex items-center justify-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold py-2 rounded-lg cursor-pointer transition-colors"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Unduh Template .JSON</span>
-                    </button>
+                    <p className="text-slate-700 leading-relaxed">
+                      Sistem dilengkapi <strong>parser dokumen cerdas</strong>. Anda dapat langsung mengunggah file <code>.docx</code> atau <code>.pdf</code> naskah ujian yang sudah Anda miliki tanpa perlu mengetik ulang:
+                    </p>
+                    <ul className="list-disc list-inside space-y-1 text-slate-700">
+                      <li><strong>Nomor Soal:</strong> Ditulis diawali angka seperti <code>1. </code>, <code>2. </code>, atau <code>1) </code>.</li>
+                      <li><strong>Opsi Pilihan:</strong> Ditulis dengan <code>A. </code>, <code>B. </code>, <code>C. </code>, <code>D. </code> (bisa 1 baris per opsi atau beberapa opsi dalam 1 baris).</li>
+                      <li><strong>Kunci Jawaban:</strong> Cukup sertakan <code>Kunci: A</code> atau <code>Kunci Jawaban: A</code>.</li>
+                      <li><strong>Pembahasan &amp; Skor (Opsional):</strong> Sertakan <code>Pembahasan: ...</code> dan <code>Skor: 10</code>.</li>
+                      <li><strong>Kop Surat Sekolah:</strong> Bagian kepala naskah atau kalimat instruksi <em>"Berilah tanda silang..."</em> otomatis dilewati secara cerdas.</li>
+                    </ul>
                   </div>
 
-                  {/* Template Aiken TXT */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
-                    <div>
-                      <div className="p-2 bg-purple-100 text-purple-800 rounded-lg w-fit mb-2">
-                        <FileText className="w-5 h-5" />
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Template JSON */}
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                      <div>
+                        <div className="p-2 bg-emerald-100 text-emerald-800 rounded-lg w-fit mb-2">
+                          <FileType className="w-5 h-5" />
+                        </div>
+                        <h4 className="font-bold text-xs text-slate-900">1. Template JSON (Lengkap)</h4>
+                        <p className="text-[11px] text-slate-600 mt-1">
+                          Format standar untuk cadangan Bank Soal, memuat atribut stimulus, tipe soal, materi, bloom, dan kunci.
+                        </p>
                       </div>
-                      <h4 className="font-bold text-xs text-slate-900">2. Template Format Aiken (.txt)</h4>
-                      <p className="text-[11px] text-slate-600 mt-1">
-                        Paling mudah digunakan! Format teks sederhana siap diketik atau dicopy dari Microsoft Word &amp; Notepad.
-                      </p>
+                      <button
+                        type="button"
+                        onClick={downloadQuestionTemplateJSON}
+                        className="w-full flex items-center justify-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold py-2 rounded-lg cursor-pointer transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Unduh Template .JSON</span>
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={downloadQuestionTemplateTXT}
-                      className="w-full flex items-center justify-center gap-1.5 bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold py-2 rounded-lg cursor-pointer transition-colors"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Unduh Template .TXT</span>
-                    </button>
-                  </div>
 
-                  {/* Template CSV Excel */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
-                    <div>
-                      <div className="p-2 bg-blue-100 text-blue-800 rounded-lg w-fit mb-2">
-                        <GoogleSheetsLogo className="w-5 h-5" />
+                    {/* Template Aiken TXT */}
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                      <div>
+                        <div className="p-2 bg-purple-100 text-purple-800 rounded-lg w-fit mb-2">
+                          <FileText className="w-5 h-5" />
+                        </div>
+                        <h4 className="font-bold text-xs text-slate-900">2. Template Format Aiken (.txt)</h4>
+                        <p className="text-[11px] text-slate-600 mt-1">
+                          Paling mudah digunakan! Format teks sederhana siap diketik atau dicopy dari Microsoft Word &amp; Notepad.
+                        </p>
                       </div>
-                      <h4 className="font-bold text-xs text-slate-900">3. Template Excel (.csv)</h4>
-                      <p className="text-[11px] text-slate-600 mt-1">
-                        Format tabel spreadsheet siap diisi di Microsoft Excel dengan kolom Soal, Opsi A-D, Kunci, dan Skor.
-                      </p>
+                      <button
+                        type="button"
+                        onClick={downloadQuestionTemplateTXT}
+                        className="w-full flex items-center justify-center gap-1.5 bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold py-2 rounded-lg cursor-pointer transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Unduh Template .TXT</span>
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={downloadQuestionTemplateCSV}
-                      className="w-full flex items-center justify-center gap-1.5 bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold py-2 rounded-lg cursor-pointer transition-colors"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Unduh Template .CSV</span>
-                    </button>
+
+                    {/* Template CSV Excel */}
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col justify-between space-y-3">
+                      <div>
+                        <div className="p-2 bg-blue-100 text-blue-800 rounded-lg w-fit mb-2">
+                          <GoogleSheetsLogo className="w-5 h-5" />
+                        </div>
+                        <h4 className="font-bold text-xs text-slate-900">3. Template Excel (.csv)</h4>
+                        <p className="text-[11px] text-slate-600 mt-1">
+                          Format tabel spreadsheet siap diisi di Microsoft Excel dengan kolom Soal, Opsi A-D, Kunci, dan Skor.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={downloadQuestionTemplateCSV}
+                        className="w-full flex items-center justify-center gap-1.5 bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold py-2 rounded-lg cursor-pointer transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Unduh Template .CSV</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

@@ -1,5 +1,126 @@
 import type { BankQuestionItem, QuestionItem, QuestionShape } from '../types';
 import { downloadTextFile } from './exportHelpers';
+import mammoth from 'mammoth';
+import * as pdfjsLib from 'pdfjs-dist';
+
+// Konfigurasi worker PDF.js untuk browser
+if (typeof window !== 'undefined' && pdfjsLib && pdfjsLib.GlobalWorkerOptions) {
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Ekstraksi teks dari file Word (.docx)
+ */
+export async function extractTextFromDocx(input: File | ArrayBuffer): Promise<string> {
+  let arrayBuffer: ArrayBuffer;
+  if (input instanceof File) {
+    arrayBuffer = await input.arrayBuffer();
+  } else {
+    arrayBuffer = input;
+  }
+  const result = await mammoth.extractRawText({ arrayBuffer });
+  return result.value || '';
+}
+
+/**
+ * Ekstraksi teks dari file PDF (.pdf)
+ */
+export async function extractTextFromPDF(input: File | ArrayBuffer): Promise<string> {
+  let arrayBuffer: ArrayBuffer;
+  if (input instanceof File) {
+    arrayBuffer = await input.arrayBuffer();
+  } else {
+    arrayBuffer = input;
+  }
+
+  try {
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(arrayBuffer),
+      useSystemFonts: true,
+    });
+    const pdfDoc = await loadingTask.promise;
+    const numPages = pdfDoc.numPages;
+    const pagesText: string[] = [];
+
+    for (let i = 1; i <= numPages; i++) {
+      const page = await pdfDoc.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageStrings = textContent.items
+        .map((item: any) => ('str' in item ? item.str : ''))
+        .filter(Boolean);
+      pagesText.push(pageStrings.join(' '));
+    }
+
+    return pagesText.join('\n\n');
+  } catch (err: any) {
+    // Fallback: jika PDF.js gagal atau terblokir worker, gunakan stream text matcher sederhana
+    try {
+      const uint8 = new Uint8Array(arrayBuffer);
+      const textDecoder = new TextDecoder('latin1');
+      const raw = textDecoder.decode(uint8);
+      const matches = raw.match(/\(([^()]+)\)\s*Tj/g);
+      if (matches && matches.length > 0) {
+        return matches.map((m) => m.replace(/^\(/, '').replace(/\)\s*Tj$/, '')).join(' ');
+      }
+    } catch {
+      // ignore
+    }
+    throw new Error(`Gagal membaca file PDF: ${err?.message || 'Format PDF tidak didukung.'}`);
+  }
+}
+
+/**
+ * Ekstraksi teks universal dari berbagai format file:
+ * - .docx / .doc
+ * - .pdf
+ * - .json
+ * - .txt / .csv / .tsv
+ */
+export async function extractTextFromFile(file: File): Promise<{ text: string; detectedFormat: string }> {
+  const fileName = file.name.toLowerCase();
+
+  // 1. File Word .docx
+  if (fileName.endsWith('.docx')) {
+    const text = await extractTextFromDocx(file);
+    return { text, detectedFormat: 'Microsoft Word (.docx)' };
+  }
+
+  // 2. File PDF .pdf
+  if (fileName.endsWith('.pdf')) {
+    const text = await extractTextFromPDF(file);
+    return { text, detectedFormat: 'Dokumen PDF (.pdf)' };
+  }
+
+  // 3. File Word lama .doc
+  if (fileName.endsWith('.doc')) {
+    try {
+      const text = await extractTextFromDocx(file);
+      if (text.trim().length > 20) {
+        return { text, detectedFormat: 'Microsoft Word (.doc)' };
+      }
+    } catch {
+      // lanjut ke pembaca teks
+    }
+  }
+
+  // 4. File Teks biasa, JSON, CSV
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = String(e.target?.result || '');
+      let fmt = 'Teks / Aiken';
+      if (fileName.endsWith('.json')) fmt = 'JSON';
+      else if (fileName.endsWith('.csv')) fmt = 'CSV Excel';
+      resolve({ text, detectedFormat: fmt });
+    };
+    reader.onerror = () => reject(new Error('Gagal membaca file teks.'));
+    reader.readAsText(file);
+  });
+}
 
 export interface ParseResult {
   questions: QuestionItem[];
@@ -198,6 +319,16 @@ export function parseQuestionsFromText(rawText: string): ParseResult {
 
     if (!line) continue;
 
+    // Abaikan kop dokumen atau petunjuk umum naskah Word/PDF
+    if (
+      line.match(/^(?:PEMERINTAH|DINAS PENDIDIKAN|KOORDINATOR WILAYAH|SEKOLAH DASAR|SDN KANDANGAN)/i) ||
+      line.match(/^(?:PENILAIAN|ASESMEN|SUMATIF|UJIAN|ULANGAN|PTS|PAS|PAT|SAS|SAT)\s+/i) ||
+      line.match(/^(?:MATA PELAJARAN|KELAS|HARI|TANGGAL|WAKTU|NAMA|NO\.?\s*ABSEN)\s*[:=]/i) ||
+      line.match(/^(?:PETUNJUK|PILIHLAH|BERILAH TANDA SILANG|JAWABLAH)/i)
+    ) {
+      continue;
+    }
+
     // Deteksi Kunci Jawaban
     const keyMatch = line.match(/^(?:KUNCI(?:\s+JAWABAN)?|ANSWER|JAWABAN|Kunci|KUNCI\s*:)\s*[:=]?\s*(.+)$/i);
     if (keyMatch) {
@@ -240,7 +371,21 @@ export function parseQuestionsFromText(rawText: string): ParseResult {
       continue;
     }
 
-    // Deteksi Opsi Pilihan (A., B., C., D. atau A), B), C), D) atau 1), 2), dst)
+    // Deteksi jika 1 baris memuat beberapa opsi sekaligus di Word/PDF (misal: "A. Bintang   B. Rantai   C. Pohon   D. Kepala Banteng")
+    if (line.match(/^[A-Ea-e][\.\)]\s+.+\s+[B-Eb-e][\.\)]\s+/)) {
+      const parts = line.split(/\s+(?=[A-Ea-e][\.\)]\s+)/);
+      if (parts.length >= 2) {
+        for (const p of parts) {
+          const m = p.match(/^([A-Ea-e])[\.\)]\s*(.+)$/);
+          if (m) {
+            currentOpsi.push(`${m[1].toUpperCase()}. ${m[2].trim()}`);
+          }
+        }
+        continue;
+      }
+    }
+
+    // Deteksi Opsi Pilihan Tunggal (A., B., C., D. atau A), B), C), D) atau 1), 2), dst)
     const optMatch = line.match(/^([A-Ea-e])[\.\)]\s*(.+)$/);
     if (optMatch) {
       const optLetter = optMatch[1].toUpperCase();
